@@ -78,8 +78,11 @@ log "Initializing memory home (~/.aegisx)"
 "$BIN_DIR/aegisxmemory" init
 
 printf '\n\033[1;32mAegisX-Memory installed!\033[0m\n'
-printf '  CLI:     aegisxmemory --help\n'
-printf '  Try:     cd your-project && aegisxmemory index . && aegisxmemory recall\n'
-printf '  MCP:     aegisxmemory mcp-config --install --agent hermes --rules   # auto-register + auto-memory rules\n'
-printf '  Docs:    %s/README.md  (English) · %s/README.id.md  (Bahasa Indonesia)\n' "$APP_DIR" "$APP_DIR"
+printf '\n'
+printf '\033[1mOne command left — answer 2 questions, done:\033[0m\n'
+printf '  aegisxmemory setup\n'
+printf '     (connects your agent + enables auto-memory; restart the agent after)\n'
+printf '\n'
+printf '  Prefer manual? aegisxmemory mcp-config --install --agent hermes --rules\n'
+printf '  Docs: %s/README.md (English) · %s/README.id.md (Bahasa Indonesia)\n' "$APP_DIR" "$APP_DIR"
 printf '  Sources: %s\n' "$APP_DIR"

@@ -16,7 +16,7 @@ Every new AI agent session re-explores your repo: architecture, decisions, gotch
 - 🤖 **Agent-native** — 5 MCP tools work with Hermes, Claude, Cursor, or any MCP client
 - 📊 **Observable** — local web dashboard with an interactive knowledge graph
 
-## ⚡ TL;DR — only 2 commands, then just talk
+## ⚡ TL;DR — install, run `setup`, answer 2 questions. Done.
 
 **Step 1 — install:**
 
@@ -24,10 +24,10 @@ Every new AI agent session re-explores your repo: architecture, decisions, gotch
 curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
 ```
 
-**Step 2 — connect it to your agent** (swap `hermes` for `claude` or `cursor` if needed):
+**Step 2 — the guided wizard** (it asks which agent you use and whether memory should be automatic — that's it):
 
 ```bash
-aegisxmemory mcp-config --install --agent hermes --rules
+aegisxmemory setup
 ```
 
 **Step 3 — restart your agent.** Done. Nothing else to run — ever.
@@ -177,9 +177,13 @@ The CLI is great for you, but the real win is the agent calling the tools itself
 ### 5.1 One command (recommended)
 
 ```bash
+aegisxmemory setup                                  # guided wizard — asks, then does everything
+aegisxmemory mcp-config --install --agent hermes --rules   # manual equivalent, one shot
 aegisxmemory mcp-config --install --agent hermes    # Hermes only
 aegisxmemory mcp-config --install                   # Hermes + Claude + Cursor at once
 ```
+
+The `setup` wizard is the friendly front door: it asks *which agent* you use (Hermes / Claude / Cursor / all) and *whether memory should be automatic*, then chains exactly the commands below. Safe to re-run any time.
 
 The installer:
 

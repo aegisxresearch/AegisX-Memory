@@ -13,6 +13,7 @@ import { binServerConfig, defaultServerConfig, parseAgentArg, renderConfig } fro
 import { SETUP_AGENTS, describeResult, describeRulesResult, installForAgent, installRulesForAgent, type SetupAgent } from './auto-setup.js';
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
 import { startDashboard } from './dashboard.js';
+import { runSetupWizard } from './setup.js';
 
 const program = new Command();
 
@@ -117,7 +118,9 @@ program
         opts.json,
         () => {
           process.stdout.write(`AegisX-Memory ready at ${aegisxHome()}\n`);
-          process.stdout.write('Next: run `aegisxmemory index .` inside your project.\n');
+          process.stdout.write('\nConnecting your agent (Hermes/Claude/Cursor)? One command does it all:\n');
+          process.stdout.write('  aegisxmemory setup\n');
+          process.stdout.write('(or manually: aegisxmemory mcp-config --install --agent hermes --rules)\n');
         },
       );
     });
@@ -439,6 +442,20 @@ program
       };
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
+    });
+  });
+
+program
+  .command('setup')
+  .description('interactive onboarding: connect your agent + enable auto-memory in one guided flow (recommended for first-time users)')
+  .action(() => {
+    run(async () => {
+      const engine = openEngine();
+      try {
+        await runSetupWizard(engine);
+      } finally {
+        engine.close();
+      }
     });
   });
 

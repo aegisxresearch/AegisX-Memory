@@ -16,7 +16,7 @@ Setiap sesi baru AI agent menjelajahi ulang repo Anda: arsitektur, keputusan, je
 - 🤖 **Ramah-agent** — 5 tool MCP yang bekerja dengan Hermes, Claude, Cursor, atau klien MCP mana pun
 - 📊 **Terpantau** — dashboard web lokal dengan knowledge graph interaktif
 
-## ⚡ TL;DR — cuma 2 perintah, lalu tinggal ngobrol
+## ⚡ TL;DR — install, jalankan `setup`, jawab 2 pertanyaan. Selesai.
 
 **Langkah 1 — install:**
 
@@ -24,10 +24,10 @@ Setiap sesi baru AI agent menjelajahi ulang repo Anda: arsitektur, keputusan, je
 curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
 ```
 
-**Langkah 2 — hubungkan ke agent Anda** (ganti `hermes` dengan `claude` atau `cursor` kalau perlu):
+**Langkah 2 — wizard terpandu** (dia nanya agent Anda apa dan mau otomatis apa tidak — itu saja):
 
 ```bash
-aegisxmemory mcp-config --install --agent hermes --rules
+aegisxmemory setup
 ```
 
 **Langkah 3 — restart agent Anda.** Selesai. Tidak ada lagi yang perlu dijalankan — selamanya.
@@ -177,9 +177,13 @@ CLI enak untuk Anda, tapi hasil sebenarnya adalah agent yang memanggil tool send
 ### 5.1 Satu perintah (disarankan)
 
 ```bash
+aegisxmemory setup                                  # wizard terpandu — nanya, lalu mengerjakan semua
+aegisxmemory mcp-config --install --agent hermes --rules   # padanan manualnya, sekali jalan
 aegisxmemory mcp-config --install --agent hermes    # khusus Hermes
 aegisxmemory mcp-config --install                   # Hermes + Claude + Cursor sekaligus
 ```
+
+Wizard `setup` adalah pintu depan yang ramah: dia bertanya *agent Anda apa* (Hermes / Claude / Cursor / semua) dan *apakah memorinya harus otomatis*, lalu merangkai persis perintah-perintah di bawah. Aman dijalankan ulang kapan saja.
 
 Installer-nya:
 
