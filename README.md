@@ -26,6 +26,22 @@ What it does: clones this repo to `~/.aegisx-app`, `npm ci` + build, symlinks
 the `aegisxmemory` CLI into `~/.local/bin` (adds it to PATH if missing), and
 runs `aegisxmemory init`. Re-running the script updates an existing install.
 
+### Register it in your agent (one command)
+
+Right after installing, plug the memory into your agent — no hand-editing:
+
+```bash
+aegisxmemory mcp-config --install --agent hermes   # writes into ~/.hermes/config.yaml
+aegisxmemory mcp-config --install                  # or every known agent (Hermes + Claude + Cursor)
+```
+
+It merges the entry into the existing config (backing the file up first,
+refusing configs that do not parse, and staying idempotent — run it twice and
+nothing doubles). Then **restart your agent**: MCP servers are spawned by the
+agent itself, so there is nothing to start by hand. Your agent now has four
+memory tools: `aegisxmemory_recall`, `aegisxmemory_remember`,
+`aegisxmemory_save`, `aegisxmemory_index`.
+
 Prefer npm instead? Install straight from the GitHub repo:
 
 ```bash
@@ -61,19 +77,8 @@ echo '{"goal":"…","facts":[…],"decisions":[…],"nextSteps":[…]}' | aegisx
 aegisxmemory remember project.myapp.test-cmd "npm test"   # anytime: pin a stable fact
 ```
 
-Register it in your agent — automatically (no hand-editing):
-
-```bash
-aegisxmemory mcp-config --install --agent hermes   # writes the block into ~/.hermes/config.yaml
-aegisxmemory mcp-config --install                  # or all known agents (Hermes + Claude + Cursor)
-```
-
-The installer merges the entry into the existing config (backing the file up
-first, refusing configs that do not parse, and staying idempotent — run it
-twice and nothing doubles). Then just **restart your agent**: MCP servers are
-spawned by the agent itself, so there is nothing to start by hand.
-
-Prefer paste-in yourself? Print the block instead:
+Prefer paste-in yourself? Print the block instead (see the full walkthrough in
+`docs/HERMES.md`):
 
 ```bash
 aegisxmemory mcp-config                  # Hermes + Claude + Cursor, one output
