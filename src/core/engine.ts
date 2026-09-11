@@ -132,6 +132,50 @@ export class Engine {
     return this.store.schemaTableNames();
   }
 
+  /** Cross-repo overview for the local web dashboard (read-only composition;
+   *  repo-scoped reads are allowlist-gated so the dashboard never shows data
+   *  from repos the current policy hides). */
+  dashboardData(): {
+    repos: Array<{ repo: string; files: number; symbols: number; scans: number; recalls: number; hitRate: number | null; tokensSavedEstimate: number | null }>;
+    facts: MemoryFact[];
+    sessions: Array<{ repo: string; goal: string; facts: number; decisions: number; nextSteps: number; createdAt: string }>;
+    recalls: Array<{ repo: string; query: string | null; tokenEstimate: number; hit: boolean; createdAt: string }>;
+    totals: { facts: number; knowledge: number; sessions: number };
+  } {
+    const repos = this.store.listRepos().filter((repo) => {
+      try {
+        this.guardRepo(repo);
+        return true;
+      } catch {
+        return false; // hidden by the allowlist policy, not an error
+      }
+    });
+    const perRepo = repos.map((repo) => {
+      const scanAgg = this.store.scanAggregate(repo);
+      const recallAgg = this.store.recallAggregate(repo);
+      return {
+        repo,
+        files: scanAgg.lastFilesTotal ?? 0,
+        symbols: scanAgg.lastSymbolsTotal ?? 0,
+        scans: scanAgg.totalScans,
+        recalls: recallAgg.totalRecalls,
+        hitRate: recallAgg.hitRate,
+        tokensSavedEstimate: recallAgg.tokensSavedEstimate,
+      };
+    });
+    return {
+      repos: perRepo,
+      facts: this.store.listFacts(50),
+      sessions: this.store.recentSessions(10),
+      recalls: this.store.recentRecalls(50),
+      totals: {
+        facts: this.store.countFacts(),
+        knowledge: this.store.countKnowledge(),
+        sessions: this.store.countSessions(),
+      },
+    };
+  }
+
   /** Aggregate stats for a repo (used by `aegisxmemory stats` and MCP). */
   statsFor(repoAbsPath: string): ObservabilityStats {
     const repo = normalizeRepoPath(repoAbsPath);

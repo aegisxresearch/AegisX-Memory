@@ -520,6 +520,62 @@ export class Store {
     return { scans: a.changes, recalls: b.changes };
   }
 
+  // ------------------------------------------------------------ dashboard
+
+  /** Distinct repos that hold any memory or telemetry (dashboard overview). */
+  listRepos(): string[] {
+    const rows = this.prepared(
+      `SELECT repo FROM (
+         SELECT DISTINCT repo FROM knowledge
+         UNION SELECT DISTINCT repo FROM sessions
+         UNION SELECT DISTINCT repo FROM scan_runs
+         UNION SELECT DISTINCT repo FROM recall_runs
+       ) ORDER BY repo`,
+    ).all() as Array<{ repo: string }>;
+    return rows.map((row) => row.repo);
+  }
+
+  /** All facts, newest first (dashboard table; owner-facing, not repo-scoped). */
+  listFacts(limit = 100): MemoryFact[] {
+    const rows = this.prepared(
+      `SELECT key, value, repo_hint, updated_at FROM facts ORDER BY updated_at DESC, key ASC LIMIT ?`,
+    ).all(limit) as Array<{ key: string; value: string; repo_hint: string | null; updated_at: string }>;
+    return rows.map((row) => ({ key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at }));
+  }
+
+  /** Recent handoffs across repos with item counts (no full bodies needed). */
+  recentSessions(limit = 20): Array<{ repo: string; goal: string; facts: number; decisions: number; nextSteps: number; createdAt: string }> {
+    const rows = this.prepared(
+      `SELECT repo, goal, facts, decisions, next_steps, created_at FROM sessions
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(limit) as Array<{ repo: string; goal: string; facts: string; decisions: string; next_steps: string; created_at: string }>;
+    return rows.map((row) => ({
+      repo: row.repo,
+      goal: row.goal,
+      facts: (JSON.parse(row.facts) as string[]).length,
+      decisions: (JSON.parse(row.decisions) as string[]).length,
+      nextSteps: (JSON.parse(row.next_steps) as string[]).length,
+      createdAt: row.created_at,
+    }));
+  }
+
+  /** Recent recall runs across repos, chronological order for trend charts. */
+  recentRecalls(limit = 50): Array<{ repo: string; query: string | null; tokenEstimate: number; hit: boolean; createdAt: string }> {
+    const rows = this.prepared(
+      `SELECT repo, query, token_estimate, hit, created_at FROM recall_runs
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(limit) as Array<{ repo: string; query: string | null; token_estimate: number; hit: number; created_at: string }>;
+    return rows
+      .map((row) => ({
+        repo: row.repo,
+        query: row.query,
+        tokenEstimate: row.token_estimate,
+        hit: row.hit === 1,
+        createdAt: row.created_at,
+      }))
+      .reverse();
+  }
+
   /** Distinguish an empty DB (no tables yet — fresh file) from a migrated one. */
   schemaTableNames(): string[] {
     const rows = this.prepared(

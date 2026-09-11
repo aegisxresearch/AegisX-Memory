@@ -12,6 +12,7 @@ import { AegisxError } from '../core/types.js';
 import { binServerConfig, defaultServerConfig, parseAgentArg, renderConfig } from './mcp-config.js';
 import { SETUP_AGENTS, describeResult, installForAgent, type SetupAgent } from './auto-setup.js';
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
+import { startDashboard } from './dashboard.js';
 
 const program = new Command();
 
@@ -418,6 +419,26 @@ program
         return;
       }
       await runServe({ port: opts.port, host: opts.host, token });
+    });
+  });
+
+program
+  .command('dashboard')
+  .description('open a local web dashboard of the memory (read-only, localhost-only)')
+  .option('--port <n>', 'TCP port', intArg, 3360)
+  .option('--no-open', "don't launch the browser automatically")
+  .action((opts: { port: number; open: boolean }) => {
+    run(async () => {
+      const { url, stop } = await startDashboard(
+        { port: opts.port, host: '127.0.0.1', open: opts.open },
+        openEngine(),
+      );
+      process.stdout.write(`Dashboard: ${url}  (Ctrl+C to stop)\n`);
+      const shutdown = (): void => {
+        void stop().then(() => process.exit(0));
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
     });
   });
 

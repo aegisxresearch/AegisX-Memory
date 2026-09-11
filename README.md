@@ -121,8 +121,10 @@ Hermes walkthrough: see `docs/HERMES.md`.
 | `aegisxmemory stats [path] [--json]` | observability: files/symbols + scans, recalls, hit rate, tokens saved |
 | `aegisxmemory watch [path] [--poll] [--debounce n]` | event-driven auto-index (chokidar + debounce, polling fallback) |
 | `aegisxmemory doctor [path]` | health check: DB integrity, schema, index drift, MCP registrations |
+| `aegisxmemory dashboard` | open a local web dashboard: totals, recall history chart, per-repo hit rates, facts, handoffs |
 | `aegisxmemory mcp` | run the MCP stdio server |
 | `aegisxmemory mcp-config [--agent n] [--bin]` | print MCP registration blocks (hermes/claude/cursor/all) |
+| `aegisxmemory dashboard [--port n] [--no-open]` | local web dashboard of your memory (read-only, charts, 127.0.0.1 only) |
 
 Exit codes: `0` success · `1` user error · `2` internal error.
 
@@ -154,6 +156,22 @@ aegisxmemory watch . --json              # JSONL per-scan events for log pipelin
 - **Telemetry is local + automatic**: every `index` and every `recall` (CLI or MCP) appends to `scan_runs` / `recall_runs`. Nothing is sent anywhere; `stats` just aggregates what's already in your DB. Telemetry never breaks indexing/recall even if the tables are corrupted. Rows older than 30 days are pruned automatically on every scan (retention cap; `purgeTelemetry` clears everything for a repo on demand).
 - **Tokens-saved estimate**: `saved ≈ (8000 − avg_tokens) × hits` — conservative baseline for a full re-read. Use the JSON value for dashboards; the human line prints the same rollup.
 - **Watch**: respects `.gitignore`, dotfiles, `node_modules`/junk dirs, and secret-bearing files (same skip set as `index`). Debounce defaults to 300 ms and coalesces bursts; `--poll` switches to interval polling without FS events.
+
+## Web dashboard
+
+```bash
+aegisxmemory dashboard            # opens http://127.0.0.1:3360 in your browser
+aegisxmemory dashboard --no-open  # just print the URL (run it in a tmux pane, say)
+```
+
+A read-only view of everything the engine remembers — refreshed every 10s, rendered locally, zero telemetry of its own:
+
+- **Totals cards** — repos, facts, knowledge entries, session handoffs, estimated tokens saved
+- **Recall history chart** — last 50 recalls as bars (teal = hit, amber = cold miss; height ≈ tokens returned; hover for details)
+- **Per-repo table** — files/symbols indexed, scans, recalls, hit rate
+- **Pinned facts & recent handoffs** — with repo hints and timestamps
+
+Binds `127.0.0.1` only (hardcoded — there is no flag to expose it), serves inline CSS/JS with **no CDN or external requests**, and renders all stored data via `textContent`, so a malicious fact value can never inject markup into the page.
 
 ## Diagnostics
 
