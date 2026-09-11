@@ -51,9 +51,11 @@ describe('Gate 2 — happy paths', () => {
 
     expect(result.brief).toContain('Code structure brief');
     expect(result.brief).toContain('src/');
-    // ranked recall: only symbols matching the query come back
+    // ranked recall: only symbols matching the query (or its synonyms) come back.
+    // Semantic-lite: "login" legitimately matches SessionStore via the
+    // login↔session synonym group; an unrelated symbol must still be absent.
     expect(result.symbols.some((s) => s.name === 'loginUser')).toBe(true);
-    expect(result.symbols.some((s) => s.name === 'SessionStore')).toBe(false);
+    expect(result.symbols.some((s) => s.name === 'hash')).toBe(false);
     // structure brief is query-independent and always present after indexing
     const full = engine.recall(null, repoDir);
     expect(full.symbols.some((s) => s.name === 'SessionStore')).toBe(true);
