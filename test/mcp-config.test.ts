@@ -103,9 +103,9 @@ describe('mcp-config generator', () => {
 
   it('--bin mode switches to the PATH binary', () => {
     const cfg = binServerConfig();
-    expect(cfg.command).toBe('aegisx');
+    expect(cfg.command).toBe('aegisxmemory');
     expect(cfg.args).toEqual(['mcp']);
-    expect(renderHermesYaml(cfg)).toContain('command: "aegisx"');
+    expect(renderHermesYaml(cfg)).toContain('command: "aegisxmemory"');
   });
 
   it('rejects unknown agents and defaults to all', () => {

@@ -15,7 +15,7 @@ import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor }
 const program = new Command();
 
 program
-  .name('aegisx')
+  .name('aegisxmemory')
   .version('1.0.0')
   .description('Persistent memory engine for AI coding agents — stop re-reading your codebase.');
 
@@ -115,7 +115,7 @@ program
         opts.json,
         () => {
           process.stdout.write(`AegisX-Memory ready at ${aegisxHome()}\n`);
-          process.stdout.write('Next: run `aegisx index .` inside your project.\n');
+          process.stdout.write('Next: run `aegisxmemory index .` inside your project.\n');
         },
       );
     });
@@ -183,7 +183,7 @@ program
 
 program
   .command('remember')
-  .description('save a stable fact, e.g. aegisx remember project.myapp.test-cmd "npm test"')
+  .description('save a stable fact, e.g. aegisxmemory remember project.myapp.test-cmd "npm test"')
   .argument('<key>')
   .argument('<value...>')
   .option('--json', 'machine-readable output', false)
@@ -226,7 +226,7 @@ program
 
 program
   .command('save')
-  .description('write a session handoff from JSON (--json <file>, or pipe: aegisx save --json -)')
+  .description('write a session handoff from JSON (--json <file>, or pipe: aegisxmemory save --json -)')
   .option('--json [file]', 'JSON file, or - for stdin; with no value: use input mode AND JSON output')
   .action((opts: { json?: string | boolean }) => {
     run(() => {
@@ -269,9 +269,9 @@ program
           result.brief.includes('No indexed symbols');
         if (empty) {
           writeJson(
-            { ok: false, reason: 'no memory for this repo yet', hint: 'run `aegisx index .` and `aegisx save` first' },
+            { ok: false, reason: 'no memory for this repo yet', hint: 'run `aegisxmemory index .` and `aegisxmemory save` first' },
             opts.json,
-            () => process.stderr.write('no memory for this repo yet — run `aegisx index .` and `aegisx save` first\n'),
+            () => process.stderr.write('no memory for this repo yet — run `aegisxmemory index .` and `aegisxmemory save` first\n'),
           );
           process.exitCode = 1;
           return;
@@ -424,7 +424,7 @@ program
   .command('mcp-config')
   .description('print ready-to-paste MCP registration blocks (hermes | claude | cursor | all)')
   .option('--agent <name>', 'target agent: hermes, claude, cursor, or all', 'all')
-  .option('--bin', 'assume `aegisx` is on PATH (npm link) instead of an absolute node entry', false)
+  .option('--bin', 'assume `aegisxmemory` is on PATH (npm link) instead of an absolute node entry', false)
   .action((opts: { agent: string; bin: boolean }) => {
     run(() => {
       const agent = parseAgentArg(opts.agent);

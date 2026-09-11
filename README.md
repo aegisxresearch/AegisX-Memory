@@ -23,14 +23,17 @@ curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/i
 ```
 
 What it does: clones this repo to `~/.aegisx-app`, `npm ci` + build, symlinks
-the `aegisx` CLI into `~/.local/bin` (adds it to PATH if missing), and runs
-`aegisx init`. Re-running the script updates an existing install.
+the `aegisxmemory` CLI into `~/.local/bin` (adds it to PATH if missing), and
+runs `aegisxmemory init`. Re-running the script updates an existing install.
 
 Prefer npm instead? Install straight from the GitHub repo:
 
 ```bash
 npm install -g github:aegisxresearch/AegisX-Memory
 ```
+
+(Installs via git clone + build; TypeScript is bundled in devDependencies, so
+no global `tsc` is needed. If it fails, use the one-line installer above.)
 
 Or from a local clone:
 
@@ -51,27 +54,27 @@ node dist/cli/index.js recall      # print budgeted context block (≤2,000 toke
 ### The session loop for any AI agent
 
 ```bash
-aegisx resume                                  # 1. session start → warm context
+aegisxmemory resume                                  # 1. session start → warm context
 # … work with your agent …
-echo '{"goal":"…","facts":[…],"decisions":[…],"nextSteps":[…]}' | aegisx save --json -
-                                               # 2. session end → persist the handoff
-aegisx remember project.myapp.test-cmd "npm test"   # anytime: pin a stable fact
+echo '{"goal":"…","facts":[…],"decisions":[…],"nextSteps":[…]}' | aegisxmemory save --json -
+                                                     # 2. session end → persist the handoff
+aegisxmemory remember project.myapp.test-cmd "npm test"   # anytime: pin a stable fact
 ```
 
 Or generate a ready-to-paste registration block for your MCP client:
 
 ```bash
-aegisx mcp-config                  # Hermes + Claude + Cursor, one output
-aegisx mcp-config --agent hermes   # YAML block for ~/.hermes/config.yaml
-aegisx mcp-config --agent claude   # strict JSON for claude_desktop_config.json / .mcp.json
-aegisx mcp-config --agent cursor   # strict JSON for ~/.cursor/mcp.json
-aegisx mcp-config --bin            # use `aegisx` from PATH (after npm link)
+aegisxmemory mcp-config                  # Hermes + Claude + Cursor, one output
+aegisxmemory mcp-config --agent hermes   # YAML block for ~/.hermes/config.yaml
+aegisxmemory mcp-config --agent claude   # strict JSON for claude_desktop_config.json / .mcp.json
+aegisxmemory mcp-config --agent cursor   # strict JSON for ~/.cursor/mcp.json
+aegisxmemory mcp-config --bin            # use `aegisxmemory` from PATH (after npm link)
 ```
 
 ### HTTP transport (remote / IDE agents)
 
 ```bash
-aegisx serve --token my-secret     # http://127.0.0.1:3359/mcp (localhost-only)
+aegisxmemory serve --token my-secret     # http://127.0.0.1:3359/mcp (localhost-only)
 ```
 
 Bearer tokens are compared in constant time (no timing side channel), and an
@@ -86,25 +89,25 @@ refused unless a token is set. Request bodies are capped at 1 MB — declared
 via `Content-Length` or streamed chunked — and rejected with `413` before
 reaching the MCP transport; handler errors can never crash the server process.
 
-MCP tools: `aegisx_recall`, `aegisx_remember`, `aegisx_save`, `aegisx_index`.
+MCP tools: `aegisxmemory_recall`, `aegisxmemory_remember`, `aegisxmemory_save`, `aegisxmemory_index`.
 Hermes walkthrough: see `docs/HERMES.md`.
 
 ## CLI
 
 | Command | Purpose |
 |---|---|
-| `aegisx init` | create memory home + DB |
-| `aegisx index [path] [--watch]` | full/incremental hash scan |
-| `aegisx recall [query] [--budget n]` | budgeted context block (markdown) |
-| `aegisx remember <key> <value>` | pin a stable fact |
-| `aegisx forget <key>` | delete a fact |
-| `aegisx save --json -` | persist a session handoff (JSON on stdin/file) |
-| `aegisx resume` | print last handoff + memory |
-| `aegisx stats [path] [--json]` | observability: files/symbols + scans, recalls, hit rate, tokens saved |
-| `aegisx watch [path] [--poll] [--debounce n]` | event-driven auto-index (chokidar + debounce, polling fallback) |
-| `aegisx doctor [path]` | health check: DB integrity, schema, index drift, MCP registrations |
-| `aegisx mcp` | run the MCP stdio server |
-| `aegisx mcp-config [--agent n] [--bin]` | print MCP registration blocks (hermes/claude/cursor/all) |
+| `aegisxmemory init` | create memory home + DB |
+| `aegisxmemory index [path] [--watch]` | full/incremental hash scan |
+| `aegisxmemory recall [query] [--budget n]` | budgeted context block (markdown) |
+| `aegisxmemory remember <key> <value>` | pin a stable fact |
+| `aegisxmemory forget <key>` | delete a fact |
+| `aegisxmemory save --json -` | persist a session handoff (JSON on stdin/file) |
+| `aegisxmemory resume` | print last handoff + memory |
+| `aegisxmemory stats [path] [--json]` | observability: files/symbols + scans, recalls, hit rate, tokens saved |
+| `aegisxmemory watch [path] [--poll] [--debounce n]` | event-driven auto-index (chokidar + debounce, polling fallback) |
+| `aegisxmemory doctor [path]` | health check: DB integrity, schema, index drift, MCP registrations |
+| `aegisxmemory mcp` | run the MCP stdio server |
+| `aegisxmemory mcp-config [--agent n] [--bin]` | print MCP registration blocks (hermes/claude/cursor/all) |
 
 Exit codes: `0` success · `1` user error · `2` internal error.
 
@@ -122,15 +125,15 @@ Recall composes, under a hard token budget: repo-anchored facts → FTS-ranked k
 ## Observability & live index
 
 ```bash
-aegisx stats                       # human-readable: files/symbols + scans & recalls
+aegisxmemory stats                 # human-readable: files/symbols + scans & recalls
   # scans:  total: 4  avg: 5ms  last: 2026-09-11T…
   # recalls: total: 7  hits: 6  hit rate: 85.7%
   # tokens saved (est.): 47800  ·  hit rate: 85.7%
-aegisx stats --json | jq '.scans.recent[0]'
-aegisx stats --json | jq '.tokensSavedEstimate'   # badge / CI metric
-aegisx watch .                     # event-driven (chokidar) — auto re-index on change
-aegisx watch . --poll --interval 2000   # polling fallback for network/VM filesystems
-aegisx watch . --json              # JSONL per-scan events for log pipelines
+aegisxmemory stats --json | jq '.scans.recent[0]'
+aegisxmemory stats --json | jq '.tokensSavedEstimate'   # badge / CI metric
+aegisxmemory watch .                     # event-driven (chokidar) — auto re-index on change
+aegisxmemory watch . --poll --interval 2000   # polling fallback for network/VM filesystems
+aegisxmemory watch . --json              # JSONL per-scan events for log pipelines
 ```
 
 - **Telemetry is local + automatic**: every `index` and every `recall` (CLI or MCP) appends to `scan_runs` / `recall_runs`. Nothing is sent anywhere; `stats` just aggregates what's already in your DB. Telemetry never breaks indexing/recall even if the tables are corrupted. Rows older than 30 days are pruned automatically on every scan (retention cap; `purgeTelemetry` clears everything for a repo on demand).
@@ -140,7 +143,7 @@ aegisx watch . --json              # JSONL per-scan events for log pipelines
 ## Diagnostics
 
 ```bash
-aegisx doctor
+aegisxmemory doctor
 ```
 
 One command answers: is the DB healthy (`PRAGMA integrity_check`), is the schema
@@ -158,14 +161,14 @@ For CI pipelines, `--json` emits a strict, versioned report on stdout
 exit code `1` when `passed` is `false`:
 
 ```bash
-aegisx doctor --json | jq -e '.passed'   # fail the job when checks fail
+aegisxmemory doctor --json | jq -e '.passed'   # fail the job when checks fail
 ```
 
 ## Security & privacy (STRIDE-hardened)
 
 - **Local-only**: no network I/O anywhere; stdio MCP only (no sockets).
 - **File permissions**: the memory home is created `0700` and the database `0600` (owner-only) — on shared hosts other accounts cannot read your indexed codebase. POSIX modes only; other filesystems fall back to restrictive-umask creation.
-- **Repo allowlist**: set `AEGISX_ALLOWED_REPOS=/path/a:/path/b` to restrict which repos MCP clients may index/recall/stats (colon-separated, `~` expanded, fail closed); repo-less global recall drops other projects' knowledge. `aegisx mcp-config` propagates it into generated server blocks.
+- **Repo allowlist**: set `AEGISX_ALLOWED_REPOS=/path/a:/path/b` to restrict which repos MCP clients may index/recall/stats (colon-separated, `~` expanded, fail closed); repo-less global recall drops other projects' knowledge. `aegisxmemory mcp-config` propagates it into generated server blocks.
 - **Secret hygiene**: `.env*`, `*.pem`, `*.key`, credentials files are never indexed; secret-shaped values (token prefixes, `user:pass@` URLs, credential-named assignments) are refused by `remember` **and `save`**; secret-bearing lines are redacted from extraction. One shared detector (`src/core/secrets.ts`) powers every write path.
 - **Injection-resistant**: recalled text is wrapped in an explicit *untrusted data* block; FTS queries are tokenized and quoted (no SQL/FTS injection; all statements prepared).
 - **DoS guards**: symlink refusal, 64-depth cap, 512 KB/file cap, 50k-file cap with explicit abort.
@@ -178,8 +181,8 @@ on stdout, warnings/errors on stderr, exit code authoritative) — including
 `doctor --json` with a versioned schema for CI gating:
 
 ```bash
-aegisx recall --json | jq '.tokenEstimate'
-aegisx doctor --json | jq -e '.passed'
+aegisxmemory recall --json | jq '.tokenEstimate'
+aegisxmemory doctor --json | jq -e '.passed'
 ```
 
 A GitHub Actions workflow (`.github/workflows/ci.yml`) runs typecheck, build,

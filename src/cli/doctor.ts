@@ -101,7 +101,7 @@ export function checkDatabase(dbFile: string): Check[] {
         name: 'database',
         status: 'warn',
         detail: `not initialized (${dbFile} not found)`,
-        fix: 'run `aegisx init`',
+        fix: 'run `aegisxmemory init`',
       },
     ];
   }
@@ -120,7 +120,7 @@ export function checkDatabase(dbFile: string): Check[] {
         name: 'database',
         status: 'fail',
         detail: `cannot open: ${err instanceof Error ? err.message : String(err)}`,
-        fix: 'check file permissions, or remove the file and run `aegisx init`',
+        fix: 'check file permissions, or remove the file and run `aegisxmemory init`',
       },
     ];
   }
@@ -141,15 +141,14 @@ export function checkDatabase(dbFile: string): Check[] {
   const coreTables = ['facts', 'knowledge', 'sessions', 'files', 'symbols', 'meta'];
   const missing = coreTables.filter((t) => !tables.includes(t));
   checks.push(
-    tables.length === 0
-      ? { name: 'schema', status: 'warn', detail: 'database is empty (no tables)', fix: 'run `aegisx init`' }
+    tables.length === 0          ? { name: 'schema', status: 'warn', detail: 'database is empty (no tables)', fix: 'run `aegisxmemory init`' }
       : missing.length === 0
         ? { name: 'schema', status: 'pass', detail: `${tables.length} core tables present` }
         : {
             name: 'schema',
             status: 'fail',
             detail: `missing tables: ${missing.join(', ')}`,
-            fix: 'run `aegisx init` to re-migrate',
+            fix: 'run `aegisxmemory init` to re-migrate',
           },
   );
   return checks;
@@ -171,7 +170,7 @@ export function checkIndexFreshness(dbFile: string, repoAbsPath: string): Check 
   }
 
   if (drift.indexedFiles === 0 && drift.onDiskFiles === 0) {
-    return { name: 'index freshness', status: 'warn', detail: 'nothing indexed for this repo', fix: 'run `aegisx index .`' };
+    return { name: 'index freshness', status: 'warn', detail: 'nothing indexed for this repo', fix: 'run `aegisxmemory index .`' };
   }
   if (drift.missingFromDisk.length === 0 && drift.notIndexed.length === 0 && drift.hashChanged.length === 0) {
     return { name: 'index freshness', status: 'pass', detail: `${drift.indexedFiles} files in sync` };
@@ -184,7 +183,7 @@ export function checkIndexFreshness(dbFile: string, repoAbsPath: string): Check 
     name: 'index freshness',
     status: 'warn',
     detail: `index drift: ${parts.join(', ')}`,
-    fix: 'run `aegisx index .`',
+    fix: 'run `aegisxmemory index .`',
   };
 }
 
@@ -199,7 +198,7 @@ function expandHome(p: string): string {
 /** Args that look like they point at this package's MCP entry. */
 export function entryLooksLikeAegisx(entryPath: string): boolean {
   const normalized = expandHome(entryPath);
-  return normalized.includes('AegisX-Memory') || normalized.includes('aegisx-memory') || normalized.endsWith('aegisx');
+  return normalized.includes('AegisX-Memory') || normalized.includes('aegisx-memory') || normalized.endsWith('aegisx') || normalized.endsWith('aegisxmemory');
 }
 
 function readJsonFile(file: string): Record<string, unknown> | null {
@@ -259,7 +258,9 @@ function registration(agent: string, configPath: string, entry: { command: strin
   // An entry named aegisx-memory run via node/npx (or the aegisx binary) is
   // ours in practice; only exotic commands raise the mismatch warning.
   const matchesAegisx =
-    entry.command === 'aegisx' ||
+    entry.command === 'aegisxmemory' ||
+    entry.command.endsWith('/aegisxmemory') ||
+    entry.command === 'aegisx' || // legacy binary name (pre-1.0 installs)
     entry.command.endsWith('/aegisx') ||
     entry.command === 'node' ||
     entry.command === 'npx' ||
@@ -308,7 +309,7 @@ function checkMcpRegistrations(): Check[] {
         name: 'mcp registration',
         status: 'warn',
         detail: 'no AegisX MCP registration found (Hermes/Claude/Cursor)',
-        fix: 'run `aegisx mcp-config` and paste the block into your agent config',
+        fix: 'run `aegisxmemory mcp-config` and paste the block into your agent config',
       },
     ];
   }
@@ -320,13 +321,13 @@ function checkMcpRegistrations(): Check[] {
             name: `mcp: ${reg.agent}`,
             status: 'warn',
             detail: `registered but entry does not look like AegisX: ${reg.command} ${reg.args.join(' ')}`,
-            fix: 're-print with `aegisx mcp-config --agent ' + reg.agent + '`',
+            fix: 're-print with `aegisxmemory mcp-config --agent ' + reg.agent + '`',
           }
         : {
             name: `mcp: ${reg.agent}`,
             status: 'fail',
             detail: `registered but entry file missing: ${reg.command} ${reg.args.join(' ')}`,
-            fix: 'rebuild with `npm run build` or fix the path via `aegisx mcp-config`',
+            fix: 'rebuild with `npm run build` or fix the path via `aegisxmemory mcp-config`',
           },
   );
 }
@@ -366,13 +367,13 @@ export function applyFixes(
 
   if (dbMissing) {
     withEngine(dbFile, () => undefined); // constructor creates home + schema
-    applied.push('initialized memory database (`aegisx init`)');
+    applied.push('initialized memory database (`aegisxmemory init`)');
   } else if (integrity !== 'ok') {
     skipped.push('database integrity is failing — auto-fix would risk data loss; restore from backup manually');
   } else if (dbEmptyFile || tables.length === 0) {
     // Opening again is harmless: migration is CREATE IF NOT EXISTS (idempotent).
     withEngine(dbFile, () => undefined);
-    applied.push('migrated empty database schema (`aegisx init`)');
+    applied.push('migrated empty database schema (`aegisxmemory init`)');
   }
 
   if (repoAbsPath !== null) {

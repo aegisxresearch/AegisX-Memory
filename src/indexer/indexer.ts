@@ -334,7 +334,7 @@ export class Indexer {
       `SELECT file_path, COUNT(*) AS n FROM symbols WHERE repo = ? GROUP BY file_path`,
     ).all(repo) as Array<{ file_path: string; n: number }>;
     if (dirs.length === 0) {
-      return 'No indexed symbols for this repo yet. Run `aegisx index` first.';
+      return 'No indexed symbols for this repo yet. Run `aegisxmemory index` first.';
     }
     const byDir = new Map<string, number>();
     for (const row of dirs) {

@@ -7,8 +7,8 @@
 #   1. clones this repo into ~/.aegisx-app (git pull if it already exists)
 #   2. installs dependencies (npm ci, falls back to npm install)
 #   3. builds the TypeScript bundle (npm run build)
-#   4. symlinks the `aegisx` CLI into ~/.local/bin (falls back to /usr/local/bin)
-#   5. runs `aegisx init` to create the memory home + database
+#   4. symlinks the `aegisxmemory` CLI into ~/.local/bin (falls back /usr/local/bin)
+#   5. runs `aegisxmemory init` to create the memory home + database
 #
 # Requirements: node >= 20, npm, git.
 set -eu
@@ -50,10 +50,15 @@ log "Building"
 # ------------------------------------------------------------------ symlink CLI
 BIN_DIR="${AEGISX_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$BIN_DIR"
-if ! ln -sfn "$APP_DIR/dist/cli/index.js" "$BIN_DIR/aegisx" 2>/dev/null; then
-  fail "cannot write $BIN_DIR/aegisx (set AEGISX_BIN_DIR to a writable dir)"
+if ! ln -sfn "$APP_DIR/dist/cli/index.js" "$BIN_DIR/aegisxmemory" 2>/dev/null; then
+  fail "cannot write $BIN_DIR/aegisxmemory (set AEGISX_BIN_DIR to a writable dir)"
 fi
 chmod +x "$APP_DIR/dist/cli/index.js" 2>/dev/null || true
+
+# Remove the symlink from the pre-1.0 `aegisx` name, if present.
+if [ -L "$BIN_DIR/aegisx" ] && [ "$(readlink "$BIN_DIR/aegisx" 2>/dev/null)" = "$APP_DIR/dist/cli/index.js" ]; then
+  rm -f "$BIN_DIR/aegisx"
+fi
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
@@ -70,10 +75,10 @@ esac
 
 # ---------------------------------------------------------------------- init DB
 log "Initializing memory home (~/.aegisx)"
-"$BIN_DIR/aegisx" init
+"$BIN_DIR/aegisxmemory" init
 
 printf '\n\033[1;32mAegisX-Memory installed!\033[0m\n'
-printf '  CLI:     aegisx --help\n'
-printf '  Try:     cd your-project && aegisx index . && aegisx recall\n'
-printf '  MCP:     aegisx mcp-config        # registration blocks for your agent\n'
+printf '  CLI:     aegisxmemory --help\n'
+printf '  Try:     cd your-project && aegisxmemory index . && aegisxmemory recall\n'
+printf '  MCP:     aegisxmemory mcp-config    # registration blocks for your agent\n'
 printf '  Sources: %s\n' "$APP_DIR"

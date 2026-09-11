@@ -16,7 +16,7 @@ node --version           # >= 20 required by AegisX
 ```bash
 cd /path/to/AegisX-Memory
 npm install && npm run build
-npm link                 # optional: makes `aegisx` available on PATH
+npm link                 # optional: makes `aegisxmemory` available on PATH
 ```
 
 ## 3. Register the MCP server
@@ -24,7 +24,7 @@ npm link                 # optional: makes `aegisx` available on PATH
 The fastest way — let AegisX print the exact block for you:
 
 ```bash
-aegisx mcp-config --agent hermes          # or --bin after npm link
+aegisxmemory mcp-config --agent hermes          # or --bin after npm link
 ```
 
 Then merge the printed `mcp_servers:` output into `~/.hermes/config.yaml`.
@@ -44,7 +44,7 @@ Or, after `npm link`:
 ```yaml
 mcp_servers:
   aegisx-memory:
-    command: "aegisx"
+    command: "aegisxmemory"
     args: ["mcp"]
 ```
 
@@ -53,7 +53,7 @@ If you use a custom memory home, pass it explicitly:
 ```yaml
 mcp_servers:
   aegisx-memory:
-    command: "aegisx"
+    command: "aegisxmemory"
     args: ["mcp"]
     env:
       AEGISX_HOME: "/home/you/.aegisx"
@@ -78,10 +78,10 @@ You should see the four tools registered with the prefix
 
 | Hermes tool name | Purpose |
 |---|---|
-| `mcp_aegisx_memory_aegisx_recall` | budgeted warm context (facts, symbols, last handoff) |
-| `mcp_aegisx_memory_aegisx_remember` | store a stable fact |
-| `mcp_aegisx_memory_aegisx_save` | store the session handoff |
-| `mcp_aegisx_memory_aegisx_index` | incremental repo index |
+| `mcp_aegisx_memory_aegisxmemory_recall` | budgeted warm context (facts, symbols, last handoff) |
+| `mcp_aegisx_memory_aegisxmemory_remember` | store a stable fact |
+| `mcp_aegisx_memory_aegisxmemory_save` | store the session handoff |
+| `mcp_aegisx_memory_aegisxmemory_index` | incremental repo index |
 
 Sanity-check outside Hermes (protocol-level test, no Hermes needed):
 
@@ -90,20 +90,20 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0.0.0"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  | node dist/cli/index.js mcp | grep -o '"name":"aegisx_[a-z_]*"'
+  | node dist/cli/index.js mcp | grep -o '"name":"aegisxmemory_[a-z_]*"'
 ```
 
-Expected: `aegisx_recall`, `aegisx_remember`, `aegisx_save`, `aegisx_index`.
+Expected: `aegisxmemory_recall`, `aegisxmemory_remember`, `aegisxmemory_save`, `aegisxmemory_index`.
 
 ## 5. Daily workflow with Hermes
 
-- Session start: *"recall the project memory"* → Hermes calls `aegisx_recall`
+- Session start: *"recall the project memory"* → Hermes calls `aegisxmemory_recall`
   and gets structure, decisions, and the last handoff without re-reading files.
-- During work: *"remember that tests run with pnpm test"* → `aegisx_remember`.
-- Session end: *"save the session handoff"* → `aegisx_save`.
-- Keep the index fresh: run `aegisx watch /path/to/repo` in a separate
+- During work: *"remember that tests run with pnpm test"* → `aegisxmemory_remember`.
+- Session end: *"save the session handoff"* → `aegisxmemory_save`.
+- Keep the index fresh: run `aegisxmemory watch /path/to/repo` in a separate
   terminal (add `--poll` on network/VM filesystems), or let Hermes call
-  `aegisx_index` after bulk edits. `watch --json` emits JSONL per-scan events.
+  `aegisxmemory_index` after bulk edits. `watch --json` emits JSONL per-scan events.
 
 Because Hermes spawns the MCP server from its own working directory, prefer
 passing an explicit `repo` parameter when you work across multiple projects

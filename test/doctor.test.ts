@@ -58,7 +58,7 @@ describe('doctor — database checks', () => {
     const checks = checkDatabase(path.join(workspace, 'nope.sqlite'));
     const db = statusOf(checks, 'database');
     expect(db?.status).toBe('warn');
-    expect(db?.fix).toContain('aegisx init');
+    expect(db?.fix).toContain('aegisxmemory init');
   });
 
   it('fail: corrupt DB is caught at open/integrity time, not silently passed', () => {
@@ -99,7 +99,7 @@ describe('doctor — index freshness', () => {
     const check = checkIndexFreshness(dbFile, repoDir);
     expect(check.status).toBe('warn');
     expect(check.detail).toContain('changed');
-    expect(check.fix).toBe('run `aegisx index .`');
+    expect(check.fix).toBe('run `aegisxmemory index .`');
   });
 
   it('warn: new file on disk counts as drift', () => {
@@ -118,7 +118,7 @@ describe('doctor — index freshness', () => {
   it('warn: empty repo with empty ledger suggests first index', () => {
     const check = checkIndexFreshness(dbFile, repoDir);
     expect(check.status).toBe('warn');
-    expect(check.fix).toContain('aegisx index');
+    expect(check.fix).toContain('aegisxmemory index');
   });
 });
 
@@ -194,12 +194,12 @@ describe('doctor — MCP detection', () => {
     const parsed = hermesEntry([
       'mcp_servers:',
       '  aegisx-memory:',
-      '    command: "aegisx"',
+      '    command: "aegisxmemory"',
       '    args: ["mcp"]',
       '    timeout: 60',
       'other_key: 1',
     ]);
-    expect(parsed).toEqual({ command: 'aegisx', args: ['mcp'] });
+    expect(parsed).toEqual({ command: 'aegisxmemory', args: ['mcp'] });
   });
 });
 

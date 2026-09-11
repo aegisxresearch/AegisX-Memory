@@ -132,7 +132,7 @@ export class Engine {
     return this.store.schemaTableNames();
   }
 
-  /** Aggregate stats for a repo (used by `aegisx stats` and MCP). */
+  /** Aggregate stats for a repo (used by `aegisxmemory stats` and MCP). */
   statsFor(repoAbsPath: string): ObservabilityStats {
     const repo = normalizeRepoPath(repoAbsPath);
     this.guardRepo(repo);

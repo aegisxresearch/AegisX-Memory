@@ -8,14 +8,14 @@
     "node": ">=20"
   },
   "bin": {
-    "aegisx": "dist/cli/index.js"
+    "aegisxmemory": "dist/cli/index.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "build": "node node_modules/typescript/bin/tsc -p tsconfig.json",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepare": "npm run build"

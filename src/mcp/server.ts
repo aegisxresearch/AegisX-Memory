@@ -29,7 +29,7 @@ export async function startMcpServer(): Promise<void> {
   const server = new McpServer({ name: 'aegisx-memory', version: '1.0.0' });
 
   server.tool(
-    'aegisx_recall',
+    'aegisxmemory_recall',
     'Get budgeted project memory: facts, decisions/gotchas, relevant symbols, and the last session handoff. Use at session start instead of re-reading the codebase.',
     {
       query: z.string().optional().describe('optional search query; omit for repo-scoped recall'),
@@ -47,7 +47,7 @@ export async function startMcpServer(): Promise<void> {
   );
 
   server.tool(
-    'aegisx_remember',
+    'aegisxmemory_remember',
     'Save a stable fact under a dot-namespaced key, e.g. key "project.myapp.test-cmd" value "npm test". Refuses secrets.',
     {
       key: z.string().describe('dot-namespaced key: lowercase letters, digits, dot, underscore, hyphen'),
@@ -64,7 +64,7 @@ export async function startMcpServer(): Promise<void> {
   );
 
   server.tool(
-    'aegisx_save',
+    'aegisxmemory_save',
     'Persist a session handoff: goal, verified facts, decisions with reasons, and actionable next steps. Call at session end.',
     {
       goal: z.string().describe('what this session was trying to achieve'),
@@ -83,11 +83,11 @@ export async function startMcpServer(): Promise<void> {
   );
 
   server.tool(
-    'aegisx_index',
+    'aegisxmemory_index',
     'Incrementally index a repo (hash-based: only changed files re-extracted). Secrets and junk dirs are skipped automatically.',
     {
       path: z.string().optional().describe('repo root; defaults to the server cwd'),
-      watch: z.boolean().optional().describe('ignored over MCP; use `aegisx index --watch` in a terminal'),
+      watch: z.boolean().optional().describe('ignored over MCP; use `aegisxmemory index --watch` in a terminal'),
     },
     async ({ path: repoPath }) => {
       try {

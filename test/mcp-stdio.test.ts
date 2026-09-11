@@ -74,13 +74,13 @@ suite('mcp stdio — allowlist denial over the wire', () => {
     client = await connectServer();
     const tools = await client.listTools();
     const names = tools.tools.map((t) => t.name).sort();
-    expect(names).toEqual(['aegisx_index', 'aegisx_recall', 'aegisx_remember', 'aegisx_save']);
+    expect(names).toEqual(['aegisxmemory_index', 'aegisxmemory_recall', 'aegisxmemory_remember', 'aegisxmemory_save']);
   });
 
   it('negative: indexing a non-allowlisted repo returns a clean tool error (no crash)', async () => {
     client = await connectServer();
     const result = (await client.callTool({
-      name: 'aegisx_index',
+      name: 'aegisxmemory_index',
       arguments: { path: repoB },
     })) as ToolResult;
 
@@ -89,7 +89,7 @@ suite('mcp stdio — allowlist denial over the wire', () => {
     // The denial is the tool's answer, not a transport failure: the very next
     // call still works — the server process is alive and healthy.
     const followUp = (await client.callTool({
-      name: 'aegisx_index',
+      name: 'aegisxmemory_index',
       arguments: { path: repoA },
     })) as ToolResult;
     expect(followUp.isError).toBeUndefined();
@@ -99,7 +99,7 @@ suite('mcp stdio — allowlist denial over the wire', () => {
   it('negative: recalling a non-allowlisted repo is denied the same way', async () => {
     client = await connectServer();
     const result = (await client.callTool({
-      name: 'aegisx_recall',
+      name: 'aegisxmemory_recall',
       arguments: { repo: repoB },
     })) as ToolResult;
     expect(result.isError).toBe(true);
@@ -109,14 +109,14 @@ suite('mcp stdio — allowlist denial over the wire', () => {
   it('happy: allowed repo indexes and recalls over stdio end-to-end', async () => {
     client = await connectServer();
     const remember = (await client.callTool({
-      name: 'aegisx_remember',
+      name: 'aegisxmemory_remember',
       arguments: { key: 'project.a.stack', value: 'stdio integration works' },
     })) as ToolResult;
     expect(remember.isError).toBeUndefined();
     expect(remember.content[0]?.text).toContain('saved project.a.stack');
 
     const recall = (await client.callTool({
-      name: 'aegisx_recall',
+      name: 'aegisxmemory_recall',
       arguments: { repo: repoA },
     })) as ToolResult;
     expect(recall.isError).toBeUndefined();

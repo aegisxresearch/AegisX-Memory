@@ -210,26 +210,26 @@ interface RecallResult { brief: string; facts: MemoryFact[]; symbols: SymbolReco
 ### 4.1 CLI
 
 ```
-aegisx init                      # create ~/.aegisx/, open DB, print setup hints
-aegisx index [--watch] [path]    # full/incremental scan of a repo
-aegisx recall [query]            # print budgeted context block (markdown, paste-ready)
-aegisx remember <key> <value>    # save a fact  (repo_hint = cwd)
-aegisx forget <key>              # delete a fact
-aegisx save --goal "..."         # write session handoff (interactive JSON prompts)
-aegisx resume [repo]             # print last handoff for repo
-aegisx stats [repo]              # file counts, symbol counts, last scan time
+aegisxmemory init                      # create ~/.aegisx/, open DB, print setup hints
+aegisxmemory index [--watch] [path]    # full/incremental scan of a repo
+aegisxmemory recall [query]            # print budgeted context block (markdown, paste-ready)
+aegisxmemory remember <key> <value>    # save a fact  (repo_hint = cwd)
+aegisxmemory forget <key>              # delete a fact
+aegisxmemory save --goal "..."         # write session handoff (interactive JSON prompts)
+aegisxmemory resume [repo]             # print last handoff for repo
+aegisxmemory stats [repo]              # file counts, symbol counts, last scan time
 ```
 
 All commands exit 0 on success, 1 on user error, 2 on internal error. Errors printed as single-line `error: <message>` (stderr).
 
-### 4.2 MCP tools (stdio server, `aegisx mcp`)
+### 4.2 MCP tools (stdio server, `aegisxmemory mcp`)
 
 | Tool | Input | Output |
 |---|---|---|
-| `aegisx_recall` | `{ query?: string, repo?: string }` | `RecallResult` as markdown |
-| `aegisx_remember` | `{ key, value }` | confirmation |
-| `aegisx_save` | `{ goal, facts[], decisions[], nextSteps[] }` | confirmation |
-| `aegisx_index` | `{ path?, watch?: boolean }` | scan stats |
+| `aegisxmemory_recall` | `{ query?: string, repo?: string }` | `RecallResult` as markdown |
+| `aegisxmemory_remember` | `{ key, value }` | confirmation |
+| `aegisxmemory_save` | `{ goal, facts[], decisions[], nextSteps[] }` | confirmation |
+| `aegisxmemory_index` | `{ path?, watch?: boolean }` | scan stats |
 
 `repo` defaults to the MCP client's cwd-derived workspace root; keys are auto-namespaced by normalized repo path, preventing cross-project contamination.
 
@@ -253,6 +253,11 @@ All commands exit 0 on success, 1 on user error, 2 on internal error. Errors pri
 1. Local-only: no telemetry, no network I/O in v1 (verified in Gate 2 by network-module import ban).
 2. Secrets never stored (regex scan at index + save time; test-enforced).
 3. Uninstall = `rm -rf ~/.aegisx` — no residue.
+
+**Naming note (v1.1):** the CLI binary and MCP tool names are `aegisxmemory`
+(e.g. `aegisxmemory index`, tools `aegisxmemory_recall` …). Configs generated
+before the rename used the short `aegisx` name; `doctor` still recognizes the
+legacy name when inspecting agent configs.
 
 ---
 
@@ -290,6 +295,6 @@ All commands exit 0 on success, 1 on user error, 2 on internal error. Errors pri
 
 **Amendment (v1.2):** Secret hygiene (§5, Information disclosure) is unified: `src/core/secrets.ts` is the single detector (token prefixes + credential-named assignments + URL-embedded credentials), applied per-line by the Indexer and whole-string by `Engine.remember` and `Engine.saveSession` — closing the handoff-path gap. The HTTP bearer check (`serve`) is constant-time via SHA-256 digest + `timingSafeEqual`, and empty-token credentials are normalized to "no token" so they cannot bypass the non-localhost bind guard.
 
-**Amendment (v1.3):** HTTP DoS hardening (§5, Denial of service): `aegisx serve` caps request bodies at 1 MB (`MAX_HTTP_BODY_BYTES`, 413) — declared `Content-Length` is rejected before reading; chunked bodies are counted in flight and the socket destroyed past the cap. POST bodies are buffered by the server and passed to the MCP transport pre-parsed (SDK `parsedBody` seam) so the cap is authoritative; malformed JSON gets a 400, and transport errors are funneled through a safe response path that never writes after end (no unhandled rejections, no process crash).
+**Amendment (v1.3):** HTTP DoS hardening (§5, Denial of service): `aegisxmemory serve` caps request bodies at 1 MB (`MAX_HTTP_BODY_BYTES`, 413) — declared `Content-Length` is rejected before reading; chunked bodies are counted in flight and the socket destroyed past the cap. POST bodies are buffered by the server and passed to the MCP transport pre-parsed (SDK `parsedBody` seam) so the cap is authoritative; malformed JSON gets a 400, and transport errors are funneled through a safe response path that never writes after end (no unhandled rejections, no process crash).
 
 **Amendment (v1.4):** Information disclosure (I): the memory home is created `0700` and the DB file chmod'd `0600` best effort on every open (`src/core/db-perms.ts`, shared by Store and Indexer). Denial of service (D): telemetry tables get a 30-day retention cap (`TELEMETRY_RETENTION_MS`) pruned opportunistically on every index and explicitly via `Engine.purgeStaleTelemetry()`. Verified end-to-end: an MCP stdio integration test (`test/mcp-stdio.test.ts`) spawns the real CLI server over `StdioClientTransport` and asserts a denied repo returns a clean `isError` tool result while the server stays alive.

@@ -127,7 +127,7 @@ afterAll(async () => {
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-describe('aegisx serve — HTTP MCP transport', () => {
+describe('aegisxmemory serve — HTTP MCP transport', () => {
   it('end-to-end: initialize → tools/list → tools/call over real HTTP', async () => {
     process.env['AEGISX_HOME'] = path.join(workspace, 'e2e'); // fresh DB per scenario
     const { port } = await start({});
@@ -138,14 +138,14 @@ describe('aegisx serve — HTTP MCP transport', () => {
 
     const list = await post(port, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
     expect(list.status).toBe(200);
-    expect(list.text).toContain('aegisx_recall');
-    expect(list.text).toContain('aegisx_index');
+    expect(list.text).toContain('aegisxmemory_recall');
+    expect(list.text).toContain('aegisxmemory_index');
 
     const call = await post(port, {
       jsonrpc: '2.0',
       id: 3,
       method: 'tools/call',
-      params: { name: 'aegisx_remember', arguments: { key: 'project.httptest.stack', value: 'http transport works' } },
+      params: { name: 'aegisxmemory_remember', arguments: { key: 'project.httptest.stack', value: 'http transport works' } },
     });
     expect(call.status).toBe(200);
     expect(call.text).toContain('saved project.httptest.stack');
@@ -154,7 +154,7 @@ describe('aegisx serve — HTTP MCP transport', () => {
       jsonrpc: '2.0',
       id: 4,
       method: 'tools/call',
-      params: { name: 'aegisx_recall', arguments: {} },
+      params: { name: 'aegisxmemory_recall', arguments: {} },
     });
     expect(recall.status).toBe(200);
     expect(recall.text).toContain('AEGISX-MEMORY:BEGIN');

@@ -38,9 +38,9 @@ export function defaultServerConfig(): McpServerConfig {
   return { command: 'node', args: [selfServerEntry(), 'mcp'], env };
 }
 
-/** Registration for npm-linked installs where `aegisx` is on PATH. */
+/** Registration for npm-linked installs where `aegisxmemory` is on PATH. */
 export function binServerConfig(): McpServerConfig {
-  return { ...defaultServerConfig(), command: 'aegisx', args: ['mcp'] };
+  return { ...defaultServerConfig(), command: 'aegisxmemory', args: ['mcp'] };
 }
 
 function yamlQuote(value: string): string {

@@ -1,5 +1,5 @@
 /**
- * HTTP MCP server (`aegisx serve`): exposes the same four memory tools over
+ * HTTP MCP server (`aegisxmemory serve`): exposes the same four memory tools over
  * StreamableHTTP for remote/IDE agents. Security posture (STRIDE):
  *  - binds 127.0.0.1 ONLY (never a public interface);
  *  - optional bearer token via AEGISX_TOKEN (401 without it);
@@ -87,7 +87,7 @@ export function buildMcpServer(): McpServer {
   const server = new McpServer({ name: 'aegisx-memory', version: '1.0.0' });
 
   server.tool(
-    'aegisx_recall',
+    'aegisxmemory_recall',
     'Get budgeted project memory: facts, decisions/gotchas, relevant symbols, and the last session handoff. Use at session start instead of re-reading the codebase.',
     {
       query: z.string().optional().describe('optional search query; omit for repo-scoped recall'),
@@ -105,7 +105,7 @@ export function buildMcpServer(): McpServer {
   );
 
   server.tool(
-    'aegisx_remember',
+    'aegisxmemory_remember',
     'Save a stable fact under a dot-namespaced key, e.g. key "project.myapp.test-cmd" value "npm test". Refuses secrets.',
     {
       key: z.string().describe('dot-namespaced key: lowercase letters, digits, dot, underscore, hyphen'),
@@ -122,7 +122,7 @@ export function buildMcpServer(): McpServer {
   );
 
   server.tool(
-    'aegisx_save',
+    'aegisxmemory_save',
     'Persist a session handoff: goal, verified facts, decisions with reasons, and actionable next steps. Call at session end.',
     {
       goal: z.string().describe('what this session was trying to achieve'),
@@ -141,7 +141,7 @@ export function buildMcpServer(): McpServer {
   );
 
   server.tool(
-    'aegisx_index',
+    'aegisxmemory_index',
     'Incrementally index a repo (hash-based: only changed files re-extracted). Secrets and junk dirs are skipped automatically.',
     {
       path: z.string().optional().describe('repo root; defaults to the server cwd'),
