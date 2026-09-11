@@ -2,133 +2,572 @@
 
 **Persistent memory engine for AI coding agents — stop re-reading your codebase.**
 
-Every new agent session re-explores the repo: architecture, decisions, gotchas, test commands — re-learned from scratch, every time. AegisX-Memory fixes this with a local-first, zero-cloud memory layer that injects *only relevant* context at session start, under a hard token budget.
+[![CI](https://github.com/aegisxresearch/AegisX-Memory/actions/workflows/ci.yml/badge.svg)](https://github.com/aegisxresearch/AegisX-Memory/actions/workflows/ci.yml)
+![node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-blue)
 
-## How it kills the re-read
+Every new AI agent session re-explores your repo: architecture, decisions, gotchas, test commands — re-learned from scratch, every single time. AegisX-Memory fixes this with a **local-first, zero-cloud memory layer** that injects *only relevant* context at session start, under a hard token budget.
+
+- 🧠 **Remembers** — facts, decisions, gotchas, session handoffs, code structure
+- ⚡ **Fast** — ~1k files indexed in under 10 s; re-scans in under 200 ms
+- 🔒 **Private** — everything lives in `~/.aegisx` on your machine; no network I/O anywhere
+- 🤖 **Agent-native** — 5 MCP tools work with Hermes, Claude, Cursor, or any MCP client
+- 📊 **Observable** — local web dashboard with an interactive knowledge graph
+
+---
+
+## 📖 Table of Contents
+
+1. [Why does this exist?](#1-why-does-this-exist)
+2. [How it works](#2-how-it-works)
+3. [Installation](#3-installation)
+4. [Five-minute quick start](#4-five-minute-quick-start)
+5. [Connecting your AI agent](#5-connecting-your-ai-agent)
+6. [Making memory automatic](#6-making-memory-automatic)
+7. [The daily loop](#7-the-daily-loop)
+8. [The web dashboard](#8-the-web-dashboard)
+9. [CLI reference](#9-cli-reference)
+10. [Facts: naming, limits, examples](#10-facts-naming-limits-examples)
+11. [Session handoffs: the JSON contract](#11-session-handoffs-the-json-contract)
+12. [Observability & live index](#12-observability--live-index)
+13. [Diagnostics: doctor](#13-diagnostics-doctor)
+14. [Environment variables](#14-environment-variables)
+15. [Security & privacy](#15-security--privacy)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Uninstalling](#17-uninstalling)
+18. [Development](#18-development)
+19. [Architecture](#19-architecture)
+20. [Roadmap](#20-roadmap)
+21. [License](#21-license)
+
+---
+
+## 1. Why does this exist?
+
+If you use AI coding agents (Hermes, Claude Code, Cursor, …) you know the ritual: every session starts with the agent re-reading files, re-discovering that tests run with `npm test`, re-tripping over the same gotcha, re-asking what last session already decided.
+
+That costs you **time** (minutes per session), **tokens** (a full codebase re-read is ~8,000+ tokens), and **correctness** (the agent forgets yesterday's decisions and repeats yesterday's mistakes).
+
+AegisX-Memory is the fix: a memory layer the agent can *recall* in one call, *contribute to* during work, and *hand off to* at session end. Think of it as a notebook the agent keeps per project — except the notebook never goes stale, because it is keyed to file-content hashes, not timestamps.
+
+## 2. How it works
+
+Three stores under one SQLite database (`~/.aegisx/memory.sqlite`, WAL + FTS5):
 
 | Store | What it remembers | Why it matters |
 |---|---|---|
 | **FactStore** | stable facts: stack, test commands, conventions (`project.<repo>.<key>`) | never re-ask "how do tests run here?" |
 | **KnowledgeGraph** | symbols, module map, TODO/FIXME markers, decisions & gotchas | replaces generic codebase re-reads |
-| **SessionStore** | compressed handoffs: goal, verified facts, decisions, next steps | a new session resumes instead of restarting |
+| **SessionStore** | compressed handoffs: goal, verified facts, decisions, next steps | a new session *resumes* instead of restarting |
 
-Everything is **hash-invalidated**: code knowledge is keyed to file content hashes (SHA-256), so the moment a file changes, its stale memories are gone. No timestamps, no heuristics — 0 stale answers.
+**Hash invalidation, not timestamps.** Code knowledge is keyed to SHA-256 file-content hashes. The moment a file changes, its stale memories are gone. Zero stale answers, zero heuristics.
 
-## Install
+**Budgeted recall.** A recall composes, under a hard token budget (default 2,000): repo-anchored facts → FTS-ranked knowledge → symbols (ranked by query) → last handoff → structure brief. Overflow drops lowest-priority items first — never mid-fact.
 
-One line from GitHub (needs node ≥ 20, npm, git):
+## 3. Installation
+
+**Requirements:** Linux/macOS (Windows via WSL), node ≥ 20, npm, git.
+
+### Option A — one line (recommended)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
 ```
 
-What it does: clones this repo to `~/.aegisx-app`, `npm ci` + build, symlinks
-the `aegisxmemory` CLI into `~/.local/bin` (adds it to PATH if missing), and
-runs `aegisxmemory init`. Re-running the script updates an existing install.
+What it does:
 
-### Register it in your agent (one command)
+1. clones this repo to `~/.aegisx-app`
+2. installs dependencies (`npm ci`) and builds the TypeScript bundle
+3. symlinks the `aegisxmemory` CLI into `~/.local/bin` (adds to PATH if missing)
+4. runs `aegisxmemory init` to create `~/.aegisx`
 
-Right after installing, plug the memory into your agent — no hand-editing:
+Re-running the same line **updates** an existing install (fetch + reset to origin/main, then rebuild).
 
-```bash
-aegisxmemory mcp-config --install --agent hermes   # writes into ~/.hermes/config.yaml
-aegisxmemory mcp-config --install                  # or every known agent (Hermes + Claude + Cursor)
-```
-
-It merges the entry into the existing config (backing the file up first,
-refusing configs that do not parse, and staying idempotent — run it twice and
-nothing doubles). Then **restart your agent**: MCP servers are spawned by the
-agent itself, so there is nothing to start by hand. Your agent now has four
-memory tools: `aegisxmemory_recall`, `aegisxmemory_remember`,
-`aegisxmemory_save`, `aegisxmemory_index`.
-
-Prefer npm instead? Install straight from the GitHub repo:
+### Option B — npm straight from GitHub
 
 ```bash
 npm install -g github:aegisxresearch/AegisX-Memory
 ```
 
-(Installs via git clone + build; TypeScript is bundled in devDependencies, so
-no global `tsc` is needed. If it fails, use the one-line installer above.)
+TypeScript is bundled in devDependencies, so no global `tsc` is needed. If this path ever fails on your setup, use Option A.
 
-Or from a local clone:
+### Option C — clone manually
 
 ```bash
 git clone https://github.com/aegisxresearch/AegisX-Memory.git
-cd AegisX-Memory && npm install && npm link
+cd AegisX-Memory && npm install && npm run build && npm link
 ```
 
-## Quick start
+### Verify
 
 ```bash
-npm install && npm run build
-node dist/cli/index.js init        # creates ~/.aegisx (override with AEGISX_HOME)
-node dist/cli/index.js index .     # first scan: ~1k files in <10s, re-scan <200ms
-node dist/cli/index.js recall      # print budgeted context block (≤2,000 tokens)
+aegisxmemory --help        # usage + command list
+aegisxmemory init          # first run also works if you skipped it above
 ```
 
-### The session loop for any AI agent
+## 4. Five-minute quick start
 
 ```bash
-aegisxmemory resume                                  # 1. session start → warm context
-# … work with your agent …
-echo '{"goal":"…","facts":[…],"decisions":[…],"nextSteps":[…]}' | aegisxmemory save --json -
-                                                     # 2. session end → persist the handoff
-aegisxmemory remember project.myapp.test-cmd "npm test"   # anytime: pin a stable fact
+# 0. one-time: create the memory home (~/.aegisx)
+aegisxmemory init
+
+# 1. go into your project and index it
+cd ~/projects/myapp
+aegisxmemory index .          # first scan: ~1k files < 10 s; re-scan < 200 ms
+
+# 2. pin the facts every future session should know
+aegisxmemory remember project.myapp.test-cmd "npm test"
+aegisxmemory remember project.myapp.stack "TypeScript + SQLite"
+
+# 3. print the warm context block an agent will see
+aegisxmemory recall           # ≤ 2,000 tokens, markdown
+aegisxmemory recall "login"   # query-focused recall
+
+# 4. end a session with a handoff
+echo '{"goal":"fix login bug","facts":["error at src/auth/login.ts:42"],"decisions":["bump bcrypt 5.1"],"nextSteps":["redeploy staging"]}' | aegisxmemory save --json -
+
+# 5. next session: resume warm
+aegisxmemory resume
 ```
 
-Prefer paste-in yourself? Print the block instead (see the full walkthrough in
-`docs/HERMES.md`):
+That is the entire product: `index` once → `remember` facts anytime → `save` at session end → `resume` at the next one.
+
+## 5. Connecting your AI agent
+
+The CLI is great for you, but the real win is the agent calling the tools itself. AegisX-Memory ships an **MCP server** (Model Context Protocol — the standard agent tool wire format). Once registered, your agent gets five tools:
+
+| Tool | Purpose |
+|---|---|
+| `aegisxmemory_recall` | budgeted warm context (facts, symbols, last handoff) |
+| `aegisxmemory_remember` | store a stable fact |
+| `aegisxmemory_save` | store the session handoff |
+| `aegisxmemory_index` | incremental repo index |
+| `aegisxmemory_graph` | compact node/edge map of the memory |
+
+> **You never start the MCP server by hand.** The agent spawns it itself when it launches. "Activating" the server = restarting the agent after registering.
+
+### 5.1 One command (recommended)
 
 ```bash
-aegisxmemory mcp-config                  # Hermes + Claude + Cursor, one output
+aegisxmemory mcp-config --install --agent hermes    # Hermes only
+aegisxmemory mcp-config --install                   # Hermes + Claude + Cursor at once
+```
+
+The installer:
+
+- creates the agent config file if it does not exist,
+- merges the `aegisx-memory` entry if it does (other entries untouched),
+- backs up the original next to itself (`*.aegisx-bak`),
+- refuses configs it cannot parse (never clobbers),
+- converts harmless empty defaults (`mcp_servers:` / `mcp_servers: []`) into proper mappings,
+- is idempotent — run it twice, nothing doubles.
+
+Then **restart your agent** (MCP has no hot reload). Done.
+
+### 5.2 Which file gets written?
+
+| Agent | Config file |
+|---|---|
+| Hermes | `~/.hermes/config.yaml` |
+| Claude | `~/.claude/claude_desktop_config.json` (or `CLAUDE_CONFIG` env) |
+| Cursor | `~/.cursor/mcp.json` |
+
+### 5.3 Paste-it-yourself (if you prefer)
+
+```bash
+aegisxmemory mcp-config                  # Hermes + Claude + Cursor blocks, one output
 aegisxmemory mcp-config --agent claude   # strict JSON for claude_desktop_config.json / .mcp.json
 aegisxmemory mcp-config --bin            # use `aegisxmemory` from PATH (after npm link)
 ```
 
-### HTTP transport (remote / IDE agents)
+Copy the printed block into your agent's config, restart the agent. Full Hermes walkthrough with screenshots-grade detail: [`docs/HERMES.md`](docs/HERMES.md).
+
+### 5.4 Verify the registration
 
 ```bash
-aegisxmemory serve --token my-secret     # http://127.0.0.1:3359/mcp (localhost-only)
+aegisxmemory doctor        # checks MCP registrations, gives fix hints
 ```
 
-Bearer tokens are compared in constant time (no timing side channel), and an
-empty `--token` / `AEGISX_TOKEN` is treated as "no token" so it can never
-bypass the non-localhost bind guard.
+Or probe the server directly (should print the five tool names):
 
-Same four MCP tools over StreamableHTTP for agents that cannot spawn stdio
-subprocesses (IDE extensions, containers, remote machines). Hardened by
-default: binds 127.0.0.1 only, DNS-rebinding Host guard, bearer-token auth
-(`--token` or `AEGISX_TOKEN`), stateless sessions. Non-localhost binds are
-refused unless a token is set. Request bodies are capped at 1 MB — declared
-via `Content-Length` or streamed chunked — and rejected with `413` before
-reaching the MCP transport; handler errors can never crash the server process.
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0.0.0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | aegisxmemory mcp | grep -o '"name":"aegisxmemory_[a-z_]*"'
+```
 
-MCP tools: `aegisxmemory_recall`, `aegisxmemory_remember`, `aegisxmemory_save`, `aegisxmemory_index`.
-Hermes walkthrough: see `docs/HERMES.md`.
+### 5.5 HTTP transport (remote / IDE agents)
 
-## CLI
+For agents that cannot spawn stdio subprocesses (IDE extensions, containers, remote machines):
+
+```bash
+aegisxmemory serve --token my-secret     # http://127.0.0.1:3359/mcp
+```
+
+Same five tools over StreamableHTTP. Hardened by default:
+
+- binds `127.0.0.1` only; non-localhost binds are refused unless a token is set,
+- bearer tokens compared in constant time (SHA-256 + `timingSafeEqual` — no timing side channel),
+- empty `--token` / `AEGISX_TOKEN` is treated as "no token" and can never bypass the bind guard,
+- DNS-rebinding Host guard,
+- request bodies capped at 1 MB (declared or chunked) and rejected with `413` before reaching the transport,
+- handler errors can never crash the server process.
+
+## 6. Making memory automatic
+
+Registration gives the agent the *ability* to remember. The `--rules` flag gives it the *standing order*:
+
+```bash
+aegisxmemory mcp-config --install --agent hermes --rules
+```
+
+`--rules` writes a marker-wrapped behavior block into the agent's standing-instructions file:
+
+| Agent | Rules file |
+|---|---|
+| Hermes | `~/.hermes/SOUL.md` (per the official Hermes prompt-assembly docs) |
+| Claude | `~/.claude/CLAUDE.md` |
+| Cursor | `~/.cursor/rules/aegisx-memory.mdc` |
+
+The block instructs the agent to:
+
+1. **recall at session start** — before anything else, call `aegisxmemory_recall` for the current repo;
+2. **remember stable facts immediately** — test command, stack, ports, conventions;
+3. **record decisions/gotchas** — via `save` handoffs, not chat-only;
+4. **save the handoff at session end** — so the next session resumes warm;
+5. **never try to store secrets** — the engine refuses them.
+
+Safety properties: marker-wrapped (nothing outside the block is modified), backed up (`*.aegisx-bak`), idempotent, and a freshly created Hermes `SOUL.md` gets a small identity seed so the agent's persona is never wiped.
+
+After installing rules, **restart the agent**. From then on you just work — the memory loop runs itself.
+
+## 7. The daily loop
+
+Everything repo-aware uses the **current working directory** — `cd` into the project first. Memory is namespaced per path: project A and project B never bleed into each other.
+
+### 7.1 If your agent is connected (the normal case)
+
+You say things; the agent calls the tools:
+
+| You say | Agent calls |
+|---|---|
+| *"recall the project memory"* (or nothing — rules make it automatic) | `aegisxmemory_recall` |
+| *"remember that tests run with npm test"* | `aegisxmemory_remember` |
+| *"save the session handoff"* (or nothing — rules make it automatic) | `aegisxmemory_save` |
+| *"re-index after that refactor"* | `aegisxmemory_index` |
+
+> The MCP server is spawned from the agent's working directory. When working across projects, tell the agent to pass the `repo` parameter explicitly.
+
+### 7.2 Terminal-only (no agent)
+
+```bash
+cd ~/projects/myapp
+
+aegisxmemory index .                  # once, then again after big changes
+aegisxmemory resume                   # session start: warm context
+aegisxmemory remember project.myapp.test-cmd "npm test"
+aegisxmemory recall "auth"            # focused recall
+echo '{"goal":"…","facts":[…],"decisions":[…],"nextSteps":[…]}' | aegisxmemory save --json -
+aegisxmemory forget project.myapp.old-thing    # delete a fact
+```
+
+### 7.3 Cheat sheet
+
+| When | Command / phrase |
+|---|---|
+| First time in a project | `aegisxmemory index .` |
+| Start of every session | `aegisxmemory resume` / *"recall the project memory"* |
+| Learned something stable | `aegisxmemory remember project.<name>.<key> <value>` |
+| End of session | `aegisxmemory save --json -` / *"save the session handoff"* |
+| Want it hands-off | `aegisxmemory watch .` in a side terminal |
+| Something feels off | `aegisxmemory doctor` |
+| Curious about usage | `aegisxmemory stats` or `aegisxmemory dashboard` |
+
+## 8. The web dashboard
+
+```bash
+aegisxmemory dashboard            # opens http://127.0.0.1:3360 in your browser
+aegisxmemory dashboard --no-open  # just print the URL (run it in a tmux pane, say)
+aegisxmemory dashboard --port 4021
+```
+
+A read-only view of everything the engine remembers — refreshed every 10 s, rendered locally:
+
+- **Totals cards** — repos, facts, knowledge entries, session handoffs, estimated tokens saved
+- **Knowledge graph** — interactive force-directed map (repos as hubs; facts, decisions/gotchas, and handoffs orbiting them); drag nodes to untangle, hover for details; colors: repo violet · fact green · knowledge amber · session cyan
+- **Recall history chart** — last 50 recalls as bars (teal = hit, amber = cold miss; height ≈ tokens returned; hover for details)
+- **Per-repo table** — files/symbols indexed, scans, recalls, hit rate
+- **Pinned facts & recent handoffs** — with repo hints and timestamps
+
+The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose it), serves inline CSS/JS with **no CDN or external requests** (works offline), and renders all stored data via `textContent`, so a malicious fact value can never inject markup into the page.
+
+## 9. CLI reference
 
 | Command | Purpose |
 |---|---|
-| `aegisxmemory init` | create memory home + DB |
-| `aegisxmemory index [path] [--watch]` | full/incremental hash scan |
+| `aegisxmemory init` | create the memory home + DB, print setup hints |
+| `aegisxmemory index [path]` | full/incremental hash scan of a repo |
 | `aegisxmemory recall [query] [--budget n]` | budgeted context block (markdown) |
 | `aegisxmemory remember <key> <value>` | pin a stable fact |
 | `aegisxmemory forget <key>` | delete a fact |
-| `aegisxmemory save --json -` | persist a session handoff (JSON on stdin/file) |
-| `aegisxmemory resume` | print last handoff + memory |
-| `aegisxmemory stats [path] [--json]` | observability: files/symbols + scans, recalls, hit rate, tokens saved |
-| `aegisxmemory watch [path] [--poll] [--debounce n]` | event-driven auto-index (chokidar + debounce, polling fallback) |
-| `aegisxmemory doctor [path]` | health check: DB integrity, schema, index drift, MCP registrations |
-| `aegisxmemory dashboard` | open a local web dashboard: totals, recall history chart, per-repo hit rates, facts, handoffs |
+| `aegisxmemory save --json <file\|->` | persist a session handoff (JSON file or stdin) |
+| `aegisxmemory resume` | print last handoff + memory for this repo |
+| `aegisxmemory stats [path] [--json]` | observability: files/symbols, scans, recalls, hit rate, tokens saved |
+| `aegisxmemory watch [path] [--poll] [--debounce n]` | event-driven auto-index (chokidar, polling fallback) |
+| `aegisxmemory doctor [path] [--fix] [--json]` | health check: DB, schema, index drift, MCP registrations |
+| `aegisxmemory dashboard [--port n] [--no-open]` | local web dashboard (read-only, charts, 127.0.0.1 only) |
 | `aegisxmemory mcp` | run the MCP stdio server |
-| `aegisxmemory mcp-config [--agent n] [--bin] [--install] [--rules]` | print MCP registration blocks (hermes/claude/cursor/all); `--install` writes them for you, `--rules` also installs auto-memory behavior rules (auto recall at start, auto save at end) |
-| `aegisxmemory dashboard [--port n] [--no-open]` | local web dashboard of your memory (read-only, charts, 127.0.0.1 only) |
+| `aegisxmemory serve [--port n] [--host h] [--token t]` | MCP over HTTP (localhost-only, bearer auth) |
+| `aegisxmemory mcp-config [--agent n] [--bin] [--install] [--rules]` | print / install MCP registration blocks; `--rules` adds auto-memory behavior |
 
-Exit codes: `0` success · `1` user error · `2` internal error.
+**Machine mode:** every data command accepts `--json` — strict JSON on stdout, warnings/errors on stderr, exit code authoritative.
 
-## Architecture (see RFC.md)
+**Exit codes:** `0` success · `1` user error · `2` internal error.
+
+### Command-by-command
+
+<details>
+<summary><code>index</code> — teach it your codebase</summary>
+
+```bash
+aegisxmemory index .            # index the current directory
+aegisxmemory index ~/work/lib   # absolute path works too
+aegisxmemory index . --watch    # keep running, re-index on change
+```
+
+Hash-based: only changed files are re-extracted. Skips `.gitignore`, dotfiles, `node_modules`/junk dirs, secret-bearing files (`.env*`, `*.pem`, `*.key`, credentials). Guards: symlink refusal, 64-depth cap, 512 KB/file cap, 50k-file cap with explicit abort.
+</details>
+
+<details>
+<summary><code>recall</code> — get the warm context block</summary>
+
+```bash
+aegisxmemory recall                  # whole-repo block, ≤ 2,000 tokens
+aegisxmemory recall "auth"           # query-focused ranking
+aegisxmemory recall --budget 800     # tighter budget for small models
+aegisxmemory recall --json | jq .    # machine mode
+```
+</details>
+
+<details>
+<summary><code>remember / forget</code> — pin and unpin facts</summary>
+
+```bash
+aegisxmemory remember project.myapp.test-cmd "npm test"
+aegisxmemory remember project.myapp.stack "TypeScript + SQLite"
+aegisxmemory remember project.myapp.dev-port "3000"
+aegisxmemory forget project.myapp.dev-port
+```
+
+Keys: lowercase letters, digits, dot, underscore, hyphen (max 128 chars). Values: max 500 chars, secret-shaped values are refused. See [§10](#10-facts-naming-limits-examples).
+</details>
+
+<details>
+<summary><code>save / resume</code> — the session handoff</summary>
+
+```bash
+echo '{"goal":"fix login bug","facts":["error at src/auth/login.ts:42"],"decisions":["bump bcrypt 5.1"],"nextSteps":["redeploy staging"]}' | aegisxmemory save --json -
+aegisxmemory save --json handoff.json     # from a file
+aegisxmemory resume                        # next session
+```
+
+Schema in [§11](#11-session-handoffs-the-json-contract).
+</details>
+
+<details>
+<summary><code>watch</code> — keep the index fresh</summary>
+
+```bash
+aegisxmemory watch .                        # event-driven (chokidar)
+aegisxmemory watch . --poll --interval 2000 # polling fallback (network/VM filesystems)
+aegisxmemory watch . --json                 # JSONL per-scan events for log pipelines
+```
+
+Debounce defaults to 300 ms and coalesces bursts; the skip set is identical to `index`.
+</details>
+
+## 10. Facts: naming, limits, examples
+
+Facts are the most durable kind of memory — things that stay true across sessions. The key convention mirrors config systems:
+
+```
+project.<project-name>.<key>
+```
+
+| Key | Example value |
+|---|---|
+| `project.myapp.test-cmd` | `npm test` |
+| `project.myapp.stack` | `TypeScript + SQLite` |
+| `project.myapp.dev-port` | `3000` |
+| `project.myapp.entry` | `src/index.ts` |
+| `project.myapp.convention` | `feature branches, squash merge` |
+
+**Rules** (enforced, with clear errors):
+
+- key: `/^[a-z0-9][a-z0-9._-]{0,127}$/` — lowercase letters, digits, dot, underscore, hyphen; max 128 chars
+- value: max 500 chars — split bigger facts into smaller ones
+- secrets are refused: token prefixes (`sk-`, `ghp_`, `AKIA…`, …), `user:pass@host` URLs, `password=…`-style assignments — one shared detector (`src/core/secrets.ts`) powers every write path
+
+## 11. Session handoffs: the JSON contract
+
+The handoff is what makes the *next* session warm. Pipe it via stdin (`save --json -`) or pass a file:
+
+```json
+{
+  "goal": "what this session was trying to achieve",
+  "facts": ["verified facts: exact errors, paths, commands"],
+  "decisions": ["decision taken — with a one-line reason"],
+  "nextSteps": ["actionable steps for the next session"]
+}
+```
+
+- `goal` — one sentence.
+- `facts` — things verified during the session (a failing test's error line, the command that reproduced a bug). Not opinions.
+- `decisions` — the "we chose X over Y because Z" entries.
+- `nextSteps` — concrete, actionable items; the next session's to-do list.
+
+`resume` prints the last handoff plus the repo's facts, knowledge, and symbols — everything an agent needs to continue without re-reading the codebase.
+
+## 12. Observability & live index
+
+```bash
+aegisxmemory stats                 # human-readable rollup
+  # scans:   total: 4  avg: 5ms  last: 2026-09-11T…
+  # recalls: total: 7  hits: 6  hit rate: 85.7%
+  # tokens saved (est.): 47800
+aegisxmemory stats --json | jq '.scans.recent[0]'
+aegisxmemory stats --json | jq '.tokensSavedEstimate'   # badge / CI metric
+```
+
+- **Telemetry is local + automatic**: every `index` and every `recall` (CLI or MCP) appends to `scan_runs` / `recall_runs`. Nothing is sent anywhere; `stats` aggregates what's already in your DB. Telemetry never breaks indexing/recall even if the tables are corrupted. Rows older than 30 days are pruned automatically on every scan (`purgeTelemetry` clears everything for a repo on demand).
+- **Tokens-saved estimate**: `saved ≈ (8000 − avg_tokens) × hits` — a conservative baseline for a full codebase re-read.
+- **Watch**: respects `.gitignore`, dotfiles, `node_modules`/junk dirs, and secret-bearing files (same skip set as `index`). Debounce defaults to 300 ms; `--poll` switches to interval polling without FS events.
+
+## 13. Diagnostics: doctor
+
+```bash
+aegisxmemory doctor
+```
+
+One command answers: is the DB healthy (`PRAGMA integrity_check`), is the schema migrated, is the index in sync with the disk (read-only hash drift), and is AegisX registered in any MCP client config (Hermes `config.yaml`, Claude `claude_desktop_config.json` / `.mcp.json`, Cursor `mcp.json`). Every warning comes with a concrete `fix →` hint; exit code `1` if anything needs attention.
+
+Safe auto-fixes with `--fix`: initializes a missing DB, migrates an empty one, re-indexes drift (all idempotent). It deliberately **never** touches MCP config files or a corrupted DB — those need human judgement.
+
+For CI pipelines, `--json` emits a strict, versioned report on stdout (`schemaVersion: 1`) with `passed`, per-check `status`, and any applied fixes — exit code `1` when `passed` is `false`:
+
+```bash
+aegisxmemory doctor --json | jq -e '.passed'   # fail the job when checks fail
+```
+
+## 14. Environment variables
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `AEGISX_HOME` | where the memory home lives (DB, telemetry) | `~/.aegisx` |
+| `AEGISX_ALLOWED_REPOS` | allowlist for MCP clients — colon-separated repo paths, `~` expanded, fail closed when set | *(unset = all repos)* |
+| `AEGISX_TOKEN` | bearer token for `aegisxmemory serve` | *(unset = no token)* |
+| `AEGISX_REPO_URL` | override the repo the installer clones (forks, air-gapped mirrors) | GitHub `main` |
+| `AEGISX_APP_DIR` | installer: where to clone the app | `~/.aegisx-app` |
+| `AEGISX_BIN_DIR` | installer: where to symlink the CLI | `~/.local/bin` |
+
+Allowlist example:
+
+```bash
+export AEGISX_ALLOWED_REPOS=~/projects/app:~/work/lib
+aegisxmemory serve --token secret   # repos outside the list are refused, fail closed
+```
+
+`mcp-config` propagates the allowlist into generated server blocks automatically.
+
+## 15. Security & privacy
+
+AegisX-Memory is STRIDE-threat-modeled (see `RFC.md` §5) and hardened where the threat is real:
+
+- **Local-only**: no network I/O anywhere; stdio MCP only (no sockets). The optional HTTP transport binds loopback and refuses otherwise without a token.
+- **File permissions**: the memory home is created `0700` and the database `0600` (owner-only) — on shared hosts other accounts cannot read your indexed codebase. POSIX modes only; other filesystems fall back to restrictive-umask creation.
+- **Repo allowlist**: `AEGISX_ALLOWED_REPOS` (see [§14](#14-environment-variables)) gates every repo-scoped operation — `index`, `recall`, `remember`, `save`, `stats`, watch start — fail closed; repo-less global recall drops other projects' knowledge.
+- **Secret hygiene**: `.env*`, `*.pem`, `*.key`, credentials files are never indexed; secret-shaped values are refused by `remember` **and** `save`; secret-bearing lines are redacted from extraction. One shared detector powers every write path.
+- **Injection-resistant**: recalled text is wrapped in an explicit *untrusted data* block; FTS queries are tokenized and quoted (no SQL/FTS injection; all statements prepared).
+- **DoS guards**: symlink refusal, 64-depth cap, 512 KB/file cap, 50k-file cap with explicit abort; 1 MB HTTP body cap with 413.
+- **Uninstall** = `rm -rf ~/.aegisx` — zero residue.
+
+## 16. Troubleshooting
+
+<details>
+<summary><code>aegisxmemory: command not found</code></summary>
+
+The symlink dir is not on PATH. Re-run the installer (it bootstraps PATH into `~/.profile`/`~/.zshrc`) or add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc, then `source` it.
+</details>
+
+<details>
+<summary>The agent's banner shows no <code>aegisxmemory_*</code> tools</summary>
+
+1. `aegisxmemory doctor` — it validates the registration and prints a fix hint.
+2. Did you restart the agent after `--install`? MCP has no hot reload.
+3. Hermes needs `pip install mcp` — without it Hermes silently disables MCP.
+4. Confirm the config file got the entry: `grep -A4 aegisx-memory ~/.hermes/config.yaml`.
+</details>
+
+<details>
+<summary><code>recall</code> says "no memory for this repo yet"</summary>
+
+Memory is namespaced per path. Run `aegisxmemory index .` (and `resume`/`recall`) from the same directory you saved from. `aegisxmemory stats` shows which repos have memory.
+</details>
+
+<details>
+<summary><code>mcp-config --install</code> refuses with "not a YAML mapping"</summary>
+
+Your `mcp_servers:` holds real data in a non-mapping shape (e.g. a non-empty list). The installer refuses rather than destroy it. Move entries under named keys (`servername: command: … args: […]`) — then re-run.
+</details>
+
+<details>
+<summary><code>remember</code> rejects my value ("secret-shaped")</summary>
+
+The value looks like a credential (token prefix, `user:pass@` URL, `password=…`). That refusal is by design — store the *location* of the secret ("in 1Password → dev vault") instead of the secret.
+</details>
+
+<details>
+<summary>Index seems slow or skipped files</summary>
+
+Skips are intentional: `.gitignore`d paths, dotfiles, `node_modules`/junk dirs, secret-bearing files, files > 512 KB. The 50k-file cap aborts with an explicit message — narrow the path you index.
+</details>
+
+<details>
+<summary>DB corrupted / upgrade went weird</summary>
+
+`aegisxmemory doctor` first; `doctor --fix` handles missing/empty DB and index drift. Worst case: `rm -rf ~/.aegisx && aegisxmemory init` — you lose memory, never your code.
+</details>
+
+## 17. Uninstalling
+
+```bash
+rm -rf ~/.aegisx        # memory + telemetry (all data)
+rm -rf ~/.aegisx-app    # only if installed via install.sh
+rm -f ~/.local/bin/aegisxmemory
+```
+
+Nothing else was ever written outside those directories (plus the agent config entry, which you can delete by hand).
+
+## 18. Development
+
+```bash
+git clone https://github.com/aegisxresearch/AegisX-Memory.git
+cd AegisX-Memory
+npm install
+npm run typecheck   # strict tsc, both src and test configs
+npm test            # vitest: happy paths + negative edge cases + invalidation + perf smoke
+npm run build       # emit dist/
+```
+
+CI (`.github/workflows/ci.yml`) runs typecheck, build, the full test suite, and a doctor gate on every push and PR. The dual quality gate: strict typing with zero placeholders, and every feature ships with a happy-path test plus negative edge-case tests.
+
+Stack: TypeScript (strict, ESM) · better-sqlite3 (WAL + FTS5) · commander · chokidar · yaml · official MCP SDK.
+
+The design doc — component boundaries, data flow, STRIDE matrix, and numbered amendments — lives in [`RFC.md`](RFC.md). The Hermes integration walkthrough is [`docs/HERMES.md`](docs/HERMES.md).
+
+## 19. Architecture
 
 ```
 CLI / MCP ──► Engine ──► FactStore ─┐
@@ -137,100 +576,20 @@ CLI / MCP ──► Engine ──► FactStore ─┐
                      Indexer ──► hash-diff walk → symbol extraction
 ```
 
-Recall composes, under a hard token budget: repo-anchored facts → FTS-ranked knowledge → symbols (ranked by query, deterministic top-list otherwise) → last handoff → structure brief. Overflow drops lowest-priority items first — never mid-fact.
+- **CLI** (`src/cli/`) — commander-based; each command thin over the Engine.
+- **MCP servers** (`src/mcp/`) — stdio (`server.ts`) and StreamableHTTP (`http-server.ts`) exposing the same Engine.
+- **Engine** (`src/core/engine.ts`) — orchestration: recall budgeting, guards, telemetry, graph projection.
+- **Store** (`src/core/store.ts`) — SQLite persistence: facts, knowledge (+FTS5), sessions, telemetry.
+- **Indexer** (`src/indexer/`) — hash-diff repository walk; extracts symbols/TODOs with per-language extractors.
+- **Secrets** (`src/core/secrets.ts`) — the single secret detector used by every write path.
 
-## Observability & live index
+Recall composition, under a hard token budget: repo-anchored facts → FTS-ranked knowledge → symbols (ranked by query, deterministic top-list otherwise) → last handoff → structure brief. Overflow drops lowest-priority items first — never mid-fact.
 
-```bash
-aegisxmemory stats                 # human-readable: files/symbols + scans & recalls
-  # scans:  total: 4  avg: 5ms  last: 2026-09-11T…
-  # recalls: total: 7  hits: 6  hit rate: 85.7%
-  # tokens saved (est.): 47800  ·  hit rate: 85.7%
-aegisxmemory stats --json | jq '.scans.recent[0]'
-aegisxmemory stats --json | jq '.tokensSavedEstimate'   # badge / CI metric
-aegisxmemory watch .                     # event-driven (chokidar) — auto re-index on change
-aegisxmemory watch . --poll --interval 2000   # polling fallback for network/VM filesystems
-aegisxmemory watch . --json              # JSONL per-scan events for log pipelines
-```
-
-- **Telemetry is local + automatic**: every `index` and every `recall` (CLI or MCP) appends to `scan_runs` / `recall_runs`. Nothing is sent anywhere; `stats` just aggregates what's already in your DB. Telemetry never breaks indexing/recall even if the tables are corrupted. Rows older than 30 days are pruned automatically on every scan (retention cap; `purgeTelemetry` clears everything for a repo on demand).
-- **Tokens-saved estimate**: `saved ≈ (8000 − avg_tokens) × hits` — conservative baseline for a full re-read. Use the JSON value for dashboards; the human line prints the same rollup.
-- **Watch**: respects `.gitignore`, dotfiles, `node_modules`/junk dirs, and secret-bearing files (same skip set as `index`). Debounce defaults to 300 ms and coalesces bursts; `--poll` switches to interval polling without FS events.
-
-## Web dashboard
-
-```bash
-aegisxmemory dashboard            # opens http://127.0.0.1:3360 in your browser
-aegisxmemory dashboard --no-open  # just print the URL (run it in a tmux pane, say)
-```
-
-A read-only view of everything the engine remembers — refreshed every 10s, rendered locally, zero telemetry of its own:
-
-- **Totals cards** — repos, facts, knowledge entries, session handoffs, estimated tokens saved
-- **Knowledge graph** — interactive force-directed map (repos as hubs; facts, decisions/gotchas, and handoffs orbiting them); drag nodes to untangle, hover for details; colors: repo violet · fact green · knowledge amber · session cyan
-- **Recall history chart** — last 50 recalls as bars (teal = hit, amber = cold miss; height ≈ tokens returned; hover for details)
-- **Per-repo table** — files/symbols indexed, scans, recalls, hit rate
-- **Pinned facts & recent handoffs** — with repo hints and timestamps
-
-Binds `127.0.0.1` only (hardcoded — there is no flag to expose it), serves inline CSS/JS with **no CDN or external requests**, and renders all stored data via `textContent`, so a malicious fact value can never inject markup into the page.
-
-## Diagnostics
-
-```bash
-aegisxmemory doctor
-```
-
-One command answers: is the DB healthy (`PRAGMA integrity_check`), is the schema
-migrated, is the index in sync with the disk (read-only hash drift), and is
-AegisX registered in any MCP client config (Hermes `config.yaml`, Claude
-`claude_desktop_config.json` / `.mcp.json`, Cursor `mcp.json`). Every warning
-comes with a concrete `fix →` hint; exit code `1` if anything needs attention.
-
-Safe auto-fixes with `--fix`: initializes a missing DB, migrates an empty one,
-and re-indexes drift (all idempotent). It deliberately **never** touches MCP
-config files or a corrupted DB — those need human judgement.
-
-For CI pipelines, `--json` emits a strict, versioned report on stdout
-(`schemaVersion: 1`) with `passed`, per-check `status`, and any applied fixes —
-exit code `1` when `passed` is `false`:
-
-```bash
-aegisxmemory doctor --json | jq -e '.passed'   # fail the job when checks fail
-```
-
-## Security & privacy (STRIDE-hardened)
-
-- **Local-only**: no network I/O anywhere; stdio MCP only (no sockets).
-- **File permissions**: the memory home is created `0700` and the database `0600` (owner-only) — on shared hosts other accounts cannot read your indexed codebase. POSIX modes only; other filesystems fall back to restrictive-umask creation.
-- **Repo allowlist**: set `AEGISX_ALLOWED_REPOS=/path/a:/path/b` to restrict which repos MCP clients may index/recall/stats (colon-separated, `~` expanded, fail closed); repo-less global recall drops other projects' knowledge. `aegisxmemory mcp-config` propagates it into generated server blocks.
-- **Secret hygiene**: `.env*`, `*.pem`, `*.key`, credentials files are never indexed; secret-shaped values (token prefixes, `user:pass@` URLs, credential-named assignments) are refused by `remember` **and `save`**; secret-bearing lines are redacted from extraction. One shared detector (`src/core/secrets.ts`) powers every write path.
-- **Injection-resistant**: recalled text is wrapped in an explicit *untrusted data* block; FTS queries are tokenized and quoted (no SQL/FTS injection; all statements prepared).
-- **DoS guards**: symlink refusal, 64-depth cap, 512 KB/file cap, 50k-file cap with explicit abort.
-- **Uninstall** = `rm -rf ~/.aegisx` — zero residue.
-
-## Development
-
-Every data command accepts `--json` for machine-readable output (strict JSON
-on stdout, warnings/errors on stderr, exit code authoritative) — including
-`doctor --json` with a versioned schema for CI gating:
-
-```bash
-aegisxmemory recall --json | jq '.tokenEstimate'
-aegisxmemory doctor --json | jq -e '.passed'
-```
-
-A GitHub Actions workflow (`.github/workflows/ci.yml`) runs typecheck, build,
-full tests, and a doctor gate on every push and PR.
-
-```bash
-npm run typecheck   # strict tsc, both src and test configs
-npm test            # vitest: happy paths + negative edge cases + invalidation + perf smoke
-npm run build       # emit dist/
-```
-
-Stack: TypeScript (strict, ESM) · better-sqlite3 (WAL + FTS5) · commander · chokidar · official MCP SDK.
-
-## Roadmap
+## 20. Roadmap
 
 - **v2** — local embedding model for semantic recall, audit log, per-agent config generators.
 - **v3** — encrypted cross-device sync (CRDT), team-shared knowledge graphs.
+
+## 21. License
+
+MIT — see [`LICENSE`](LICENSE). Contributions welcome: open an issue or PR; the RFC amendments log is the source of truth for design changes.
