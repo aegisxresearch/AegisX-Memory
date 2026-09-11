@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Gate 1 — typecheck (strict, src + tests)
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Gate 2 — behavioral tests
+        run: npm test
+
+      - name: Doctor gate (machine-readable)
+        run: |
+          node dist/cli/index.js init
+          node dist/cli/index.js index .
+          node dist/cli/index.js doctor --fix --json | tee doctor-report.json
+          node -e "
+            const report = require('./doctor-report.json');
+            if (report.schemaVersion !== 1) throw new Error('unexpected schemaVersion');
+            const blocking = report.checks.filter((c) => c.status === 'fail');
+            if (blocking.length > 0) {
+              console.error('doctor failures:', blocking.map((c) => c.name));
+              process.exit(1);
+            }
+            console.log('doctor: no blocking checks; passed =', report.passed);
+          "
+
+      - name: Upload doctor report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doctor-report
+          path: doctor-report.json
+          if-no-files-found: ignore

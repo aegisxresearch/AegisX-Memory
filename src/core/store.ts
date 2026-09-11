@@ -1,0 +1,559 @@
+/**
+ * Store: SQLite persistence for FactStore / Knowledge / Sessions / Meta.
+ * Files and symbols live in the Indexer's own tables (same DB, separate module).
+ */
+import DatabaseConstructor from 'better-sqlite3';
+import type { Database as DatabaseType, Statement, RunResult } from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  AegisxError,
+  type KnowledgeKind,
+  type KnowledgeRecord,
+  type MemoryFact,
+  type SessionHandoff,
+} from './types.js';
+import { buildFtsQuery } from './fts.js';
+import { secureDbFile } from './db-perms.js';
+
+export const FACT_VALUE_MAX = 500;
+export const KNOWLEDGE_TITLE_MAX = 200;
+export const KNOWLEDGE_BODY_MAX = 4_000;
+export const HANDOFF_STRING_MAX = 1_000;
+export const HANDOFF_ARRAY_MAX = 20;
+/** Telemetry retention window (ISO timestamps compare lexicographically). */
+export const TELEMETRY_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+const KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+
+export class Store {
+  private readonly db: DatabaseType;
+  private readonly stmtCache = new Map<string, Statement>();
+
+  constructor(dbFile: string) {
+    fs.mkdirSync(path.dirname(dbFile), { recursive: true, mode: 0o700 });
+    this.db = new DatabaseConstructor(dbFile);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('foreign_keys = ON');
+    // Owner-only file mode (best effort — e.g. chmod may be unsupported on
+    // some filesystems; SQLite created the file with restrictive umask anyway).
+    secureDbFile(dbFile);
+    this.migrate();
+  }
+
+  private migrate(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS facts (
+        id INTEGER PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        value TEXT NOT NULL,
+        repo_hint TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+        value, key, content='facts', content_rowid='id'
+      );
+      CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+        INSERT INTO facts_fts(rowid, value, key) VALUES (new.id, new.value, new.key);
+      END;
+      CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, value, key)
+          VALUES ('delete', old.id, old.value, old.key);
+      END;
+      CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, value, key)
+          VALUES ('delete', old.id, old.value, old.key);
+        INSERT INTO facts_fts(rowid, value, key) VALUES (new.id, new.value, new.key);
+      END;
+
+      CREATE TABLE IF NOT EXISTS knowledge (
+        id INTEGER PRIMARY KEY,
+        repo TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('decision','gotcha','convention','lesson')),
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        anchors TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+        title, body, content='knowledge', content_rowid='id'
+      );
+      CREATE TRIGGER IF NOT EXISTS knowledge_ai AFTER INSERT ON knowledge BEGIN
+        INSERT INTO knowledge_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
+      END;
+      CREATE TRIGGER IF NOT EXISTS knowledge_ad AFTER DELETE ON knowledge BEGIN
+        INSERT INTO knowledge_fts(knowledge_fts, rowid, title, body)
+          VALUES ('delete', old.id, old.title, old.body);
+      END;
+      CREATE TRIGGER IF NOT EXISTS knowledge_au AFTER UPDATE ON knowledge BEGIN
+        INSERT INTO knowledge_fts(knowledge_fts, rowid, title, body)
+          VALUES ('delete', old.id, old.title, old.body);
+        INSERT INTO knowledge_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
+      END;
+
+      CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY,
+        repo TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        facts TEXT NOT NULL,
+        decisions TEXT NOT NULL,
+        next_steps TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_repo ON sessions(repo, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS scan_runs (
+        id INTEGER PRIMARY KEY,
+        repo TEXT NOT NULL,
+        files_total INTEGER NOT NULL,
+        files_changed INTEGER NOT NULL,
+        files_deleted INTEGER NOT NULL,
+        files_skipped INTEGER NOT NULL,
+        symbols_total INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_scan_runs_repo ON scan_runs(repo, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS recall_runs (
+        id INTEGER PRIMARY KEY,
+        repo TEXT NOT NULL,
+        query TEXT,
+        token_estimate INTEGER NOT NULL,
+        facts_hit INTEGER NOT NULL,
+        symbols_hit INTEGER NOT NULL,
+        knowledge_hit INTEGER NOT NULL,
+        hit INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_recall_runs_repo ON recall_runs(repo, created_at DESC);
+    `);
+  }
+
+  private prepared(sql: string): Statement {
+    const cached = this.stmtCache.get(sql);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const stmt = this.db.prepare(sql);
+    this.stmtCache.set(sql, stmt);
+    return stmt;
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  // ---------------------------------------------------------------- facts
+
+  validateKey(key: string): string {
+    if (!KEY_PATTERN.test(key)) {
+      throw new AegisxError(
+        'user',
+        `invalid key "${key}": must match ${KEY_PATTERN.source} (lowercase letters, digits, dot, underscore, hyphen)`,
+      );
+    }
+    return key;
+  }
+
+  validateValue(value: string): string {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      throw new AegisxError('user', 'fact value must not be empty');
+    }
+    if (trimmed.length > FACT_VALUE_MAX) {
+      throw new AegisxError(
+        'user',
+        `fact value too long (${trimmed.length} > ${FACT_VALUE_MAX} chars): split into smaller facts`,
+      );
+    }
+    return trimmed;
+  }
+
+  rememberFact(key: string, value: string, repoHint: string | null): MemoryFact {
+    this.validateKey(key);
+    const clean = this.validateValue(value);
+    const now = new Date().toISOString();
+    this.prepared(
+      `INSERT INTO facts (key, value, repo_hint, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+         repo_hint = excluded.repo_hint, updated_at = excluded.updated_at`,
+    ).run(key, clean, repoHint, now);
+    return { key, value: clean, repoHint, updatedAt: now };
+  }
+
+  forgetFact(key: string): boolean {
+    this.validateKey(key);
+    const res: RunResult = this.prepared('DELETE FROM facts WHERE key = ?').run(key);
+    return res.changes > 0;
+  }
+
+  getFact(key: string): MemoryFact | undefined {
+    const row = this.prepared('SELECT key, value, repo_hint, updated_at FROM facts WHERE key = ?').get(
+      key,
+    ) as { key: string; value: string; repo_hint: string | null; updated_at: string } | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    return { key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at };
+  }
+
+  factsForRepo(repo: string, limit = 20): MemoryFact[] {
+    const rows = this.prepared(
+      `SELECT key, value, repo_hint, updated_at FROM facts
+       WHERE repo_hint = ? ORDER BY updated_at DESC LIMIT ?`,
+    ).all(repo, limit) as Array<{ key: string; value: string; repo_hint: string | null; updated_at: string }>;
+    return rows.map((row) => ({ key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at }));
+  }
+
+  searchFacts(query: string, limit = 10): MemoryFact[] {
+    const ftsQuery = buildFtsQuery(query);
+    if (ftsQuery === null) {
+      return [];
+    }
+    const rows = this.prepared(
+      `SELECT f.key, f.value, f.repo_hint, f.updated_at
+       FROM facts_fts fts JOIN facts f ON f.id = fts.rowid
+       WHERE facts_fts MATCH ? ORDER BY rank LIMIT ?`,
+    ).all(ftsQuery, limit) as Array<{ key: string; value: string; repo_hint: string | null; updated_at: string }>;
+    return rows.map((row) => ({ key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at }));
+  }
+
+  countFacts(): number {
+    const row = this.prepared('SELECT COUNT(*) AS n FROM facts').get() as { n: number };
+    return row.n;
+  }
+
+  // ------------------------------------------------------------ knowledge
+
+  validateKnowledge(kind: KnowledgeKind, title: string, body: string): void {
+    if (title.trim().length === 0) {
+      throw new AegisxError('user', 'knowledge title must not be empty');
+    }
+    if (title.length > KNOWLEDGE_TITLE_MAX) {
+      throw new AegisxError('user', `knowledge title too long (${title.length} > ${KNOWLEDGE_TITLE_MAX})`);
+    }
+    if (body.trim().length === 0) {
+      throw new AegisxError('user', 'knowledge body must not be empty');
+    }
+    if (body.length > KNOWLEDGE_BODY_MAX) {
+      throw new AegisxError('user', `knowledge body too long (${body.length} > ${KNOWLEDGE_BODY_MAX})`);
+    }
+    const allowed: readonly KnowledgeKind[] = ['decision', 'gotcha', 'convention', 'lesson'];
+    if (!allowed.includes(kind)) {
+      throw new AegisxError('user', `invalid knowledge kind "${kind}"`);
+    }
+  }
+
+  saveKnowledge(
+    repo: string,
+    kind: KnowledgeKind,
+    title: string,
+    body: string,
+    anchors: string[],
+  ): KnowledgeRecord {
+    this.validateKnowledge(kind, title, body);
+    const now = new Date().toISOString();
+    this.prepared(
+      `INSERT INTO knowledge (repo, kind, title, body, anchors, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(repo, kind, title, body, JSON.stringify(anchors), now);
+    return { kind, title, body, anchors, updatedAt: now };
+  }
+
+  knowledgeForRepo(repo: string, limit = 20): KnowledgeRecord[] {
+    const rows = this.prepared(
+      `SELECT kind, title, body, anchors, updated_at FROM knowledge WHERE repo = ? ORDER BY updated_at DESC LIMIT ?`,
+    ).all(repo, limit) as Array<{ kind: string; title: string; body: string; anchors: string; updated_at: string }>;
+    return rows.map((row) => ({
+      kind: row.kind as KnowledgeKind,
+      title: row.title,
+      body: row.body,
+      anchors: JSON.parse(row.anchors) as string[],
+      updatedAt: row.updated_at,
+      repo,
+    }));
+  }
+
+  searchKnowledge(query: string, repo: string | null, limit = 10): KnowledgeRecord[] {
+    const ftsQuery = buildFtsQuery(query);
+    if (ftsQuery === null) {
+      return [];
+    }
+    const base = `SELECT k.repo, k.kind, k.title, k.body, k.anchors, k.updated_at
+       FROM knowledge_fts fts JOIN knowledge k ON k.id = fts.rowid
+       WHERE knowledge_fts MATCH ?`;
+    const rows = (
+      repo === null
+        ? (this.prepared(`${base} ORDER BY rank LIMIT ?`).all(ftsQuery, limit) as Array<{
+            repo: string; kind: string; title: string; body: string; anchors: string; updated_at: string;
+          }>)
+        : (this.prepared(`${base} AND k.repo = ? ORDER BY rank LIMIT ?`).all(ftsQuery, repo, limit) as Array<{
+            repo: string; kind: string; title: string; body: string; anchors: string; updated_at: string;
+          }>)
+    ).map((row) => ({
+      kind: row.kind as KnowledgeKind,
+      title: row.title,
+      body: row.body,
+      anchors: JSON.parse(row.anchors) as string[],
+      updatedAt: row.updated_at,
+      repo: row.repo,
+    }));
+    return rows;
+  }
+
+  countKnowledge(): number {
+    const row = this.prepared('SELECT COUNT(*) AS n FROM knowledge').get() as { n: number };
+    return row.n;
+  }
+
+  // ------------------------------------------------------------- sessions
+
+  saveSession(repo: string, handoff: SessionHandoff): void {
+    assertHandoff(handoff);
+    this.prepared(
+      `INSERT INTO sessions (repo, goal, facts, decisions, next_steps, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      repo,
+      handoff.goal,
+      JSON.stringify(handoff.facts),
+      JSON.stringify(handoff.decisions),
+      JSON.stringify(handoff.nextSteps),
+      new Date().toISOString(),
+    );
+  }
+
+  lastSession(repo: string): SessionHandoff | undefined {
+    const row = this.prepared(
+      `SELECT goal, facts, decisions, next_steps, created_at FROM sessions
+       WHERE repo = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(repo) as {
+      goal: string; facts: string; decisions: string; next_steps: string; created_at: string;
+    } | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    return {
+      goal: row.goal,
+      facts: JSON.parse(row.facts) as string[],
+      decisions: JSON.parse(row.decisions) as string[],
+      nextSteps: JSON.parse(row.next_steps) as string[],
+      createdAt: row.created_at,
+    };
+  }
+
+  countSessions(): number {
+    const row = this.prepared('SELECT COUNT(*) AS n FROM sessions').get() as { n: number };
+    return row.n;
+  }
+
+  // ----------------------------------------------------------------- meta
+
+  setMeta(key: string, value: string): void {
+    this.prepared(
+      `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(key, value);
+  }
+
+  getMeta(key: string): string | undefined {
+    const row = this.prepared('SELECT value FROM meta WHERE key = ?').get(key) as { value: string } | undefined;
+    return row?.value;
+  }
+
+  // ---------------------------------------------------------------- doctor
+
+  /** Run SQLite's PRAGMA integrity_check — 'ok' means the file is healthy. */
+  integrityCheck(): string {
+    const row = this.prepared('PRAGMA integrity_check').get() as unknown as Record<string, unknown> | undefined;
+    if (row === undefined) return 'unknown';
+    const value = row['integrity_check'] ?? row['result'];
+    return typeof value === 'string' ? value : 'unknown';
+  }
+
+  // ---------------------------------------------------------- telemetry
+
+  recordScanRun(repo: string, stats: {
+    filesTotal: number;
+    filesChanged: number;
+    filesDeleted: number;
+    filesSkipped: number;
+    symbolsTotal: number;
+    durationMs: number;
+  }): void {
+    this.prepared(
+      `INSERT INTO scan_runs
+        (repo, files_total, files_changed, files_deleted, files_skipped, symbols_total, duration_ms, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      repo,
+      stats.filesTotal,
+      stats.filesChanged,
+      stats.filesDeleted,
+      stats.filesSkipped,
+      stats.symbolsTotal,
+      stats.durationMs,
+      new Date().toISOString(),
+    );
+  }
+
+  recordRecallRun(
+    repo: string,
+    query: string | null,
+    tokenEstimate: number,
+    factsHit: number,
+    symbolsHit: number,
+    knowledgeHit: number,
+    hit: boolean,
+  ): void {
+    this.prepared(
+      `INSERT INTO recall_runs
+        (repo, query, token_estimate, facts_hit, symbols_hit, knowledge_hit, hit, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      repo,
+      query,
+      tokenEstimate,
+      factsHit,
+      symbolsHit,
+      knowledgeHit,
+      hit ? 1 : 0,
+      new Date().toISOString(),
+    );
+  }
+
+  scanRunsForRepo(repo: string, limit = 30): Array<{
+    filesTotal: number; filesChanged: number; filesDeleted: number;
+    filesSkipped: number; symbolsTotal: number; durationMs: number; createdAt: string;
+  }> {
+    const rows = this.prepared(
+      `SELECT files_total, files_changed, files_deleted, files_skipped, symbols_total, duration_ms, created_at
+       FROM scan_runs WHERE repo = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(repo, limit) as Array<{
+      files_total: number; files_changed: number; files_deleted: number;
+      files_skipped: number; symbols_total: number; duration_ms: number; created_at: string;
+    }>;
+    return rows.map((r) => ({
+      filesTotal: r.files_total, filesChanged: r.files_changed, filesDeleted: r.files_deleted,
+      filesSkipped: r.files_skipped, symbolsTotal: r.symbols_total, durationMs: r.duration_ms, createdAt: r.created_at,
+    }));
+  }
+
+  recallRunsForRepo(repo: string, limit = 100): Array<{
+    tokenEstimate: number; factsHit: number; symbolsHit: number;
+    knowledgeHit: number; hit: boolean; createdAt: string;
+  }> {
+    const rows = this.prepared(
+      `SELECT token_estimate, facts_hit, symbols_hit, knowledge_hit, hit, created_at
+       FROM recall_runs WHERE repo = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(repo, limit) as Array<{
+      token_estimate: number; facts_hit: number; symbols_hit: number;
+      knowledge_hit: number; hit: number; created_at: string;
+    }>;
+    return rows.map((r) => ({
+      tokenEstimate: r.token_estimate, factsHit: r.facts_hit, symbolsHit: r.symbols_hit,
+      knowledgeHit: r.knowledge_hit, hit: r.hit === 1, createdAt: r.created_at,
+    }));
+  }
+
+  scanAggregate(repo: string): {
+    totalScans: number; avgDurationMs: number | null; lastScanAt: string | null;
+    lastFilesTotal: number | null; lastSymbolsTotal: number | null;
+  } {
+    const row = this.prepared(
+      `SELECT COUNT(*) AS n, AVG(duration_ms) AS avg_ms FROM scan_runs WHERE repo = ?`,
+    ).get(repo) as { n: number; avg_ms: number | null };
+    const last = this.prepared(
+      `SELECT files_total, symbols_total, created_at FROM scan_runs WHERE repo = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(repo) as { files_total: number; symbols_total: number; created_at: string } | undefined;
+    return {
+      totalScans: row.n,
+      avgDurationMs: row.avg_ms === null ? null : Math.round(row.avg_ms),
+      lastScanAt: last?.created_at ?? null,
+      lastFilesTotal: last?.files_total ?? null,
+      lastSymbolsTotal: last?.symbols_total ?? null,
+    };
+  }
+
+  recallAggregate(repo: string): {
+    totalRecalls: number; hits: number; hitRate: number | null;
+    avgTokens: number | null; tokensSavedEstimate: number | null;
+  } {
+    const row = this.prepared(
+      `SELECT COUNT(*) AS n,
+              COALESCE(SUM(CASE WHEN hit = 1 THEN 1 ELSE 0 END), 0) AS hits,
+              AVG(token_estimate) AS avg_tokens
+       FROM recall_runs WHERE repo = ?`,
+    ).get(repo) as { n: number; hits: number; avg_tokens: number | null };
+    // Conservative estimate: each warm recall would otherwise cost a full
+    // re-read (~8k tokens for a non-trivial repo). Saved = (8000 - actual).
+    // Floor at 0 so cold misses don't count as "saving".
+    const SAVED_BASELINE = 8000;
+    const hitRows = row.hits;
+    const avgSavedPerHit = row.avg_tokens === null ? null : Math.max(0, SAVED_BASELINE - Math.round(row.avg_tokens));
+    const tokensSavedEstimate = avgSavedPerHit === null ? null : avgSavedPerHit * hitRows;
+    return {
+      totalRecalls: row.n,
+      hits: hitRows,
+      hitRate: row.n === 0 ? null : Math.round((hitRows / row.n) * 1000) / 10, // one decimal
+      avgTokens: row.avg_tokens === null ? null : Math.round(row.avg_tokens),
+      tokensSavedEstimate,
+    };
+  }
+
+  purgeTelemetry(repo: string): { scans: number; recalls: number } {
+    const a = this.prepared('DELETE FROM scan_runs WHERE repo = ?').run(repo);
+    const b = this.prepared('DELETE FROM recall_runs WHERE repo = ?').run(repo);
+    return { scans: a.changes, recalls: b.changes };
+  }
+
+  /** Retention cap (RFC §5, STRIDE:D): telemetry older than 30 days is
+   *  pruned across ALL repos — called on every index so the tables cannot
+   *  grow unbounded under watch mode. Returns removed rows per table. */
+  pruneOldTelemetry(maxAgeMs = TELEMETRY_RETENTION_MS): { scans: number; recalls: number } {
+    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+    const a = this.prepared('DELETE FROM scan_runs WHERE created_at < ?').run(cutoff);
+    const b = this.prepared('DELETE FROM recall_runs WHERE created_at < ?').run(cutoff);
+    return { scans: a.changes, recalls: b.changes };
+  }
+
+  /** Distinguish an empty DB (no tables yet — fresh file) from a migrated one. */
+  schemaTableNames(): string[] {
+    const rows = this.prepared(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_data' AND name NOT LIKE '%_idx' AND name NOT LIKE '%_config' ORDER BY name`,
+    ).all() as Array<{ name: string }>;
+    return rows.map((row) => row.name);
+  }
+}
+
+/** Back-compat alias: free-text → safe FTS5 query. */
+export const ftsEscape = buildFtsQuery;
+
+function assertHandoff(handoff: SessionHandoff): void {
+  if (handoff.goal.trim().length === 0) {
+    throw new AegisxError('user', 'session goal must not be empty');
+  }
+  if (handoff.goal.length > HANDOFF_STRING_MAX) {
+    throw new AegisxError('user', `session goal too long (${handoff.goal.length} > ${HANDOFF_STRING_MAX})`);
+  }
+  for (const listName of ['facts', 'decisions', 'nextSteps'] as const) {
+    const list = handoff[listName];
+    if (!Array.isArray(list)) {
+      throw new AegisxError('user', `session ${listName} must be an array`);
+    }
+    if (list.length > HANDOFF_ARRAY_MAX) {
+      throw new AegisxError('user', `session ${listName} has too many items (${list.length} > ${HANDOFF_ARRAY_MAX})`);
+    }
+    for (const item of list) {
+      if (typeof item !== 'string' || item.trim().length === 0) {
+        throw new AegisxError('user', `session ${listName} items must be non-empty strings`);
+      }
+      if (item.length > HANDOFF_STRING_MAX) {
+        throw new AegisxError('user', `session ${listName} item too long (${item.length} > ${HANDOFF_STRING_MAX})`);
+      }
+    }
+  }
+}
