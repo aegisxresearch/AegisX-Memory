@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parse as parseYaml, parseDocument, stringify as stringifyYaml } from 'yaml';
+import { isMap, isScalar, isSeq, parse as parseYaml, parseDocument, stringify as stringifyYaml, type YAMLMap } from 'yaml';
 import type { McpServerConfig } from './mcp-config.js';
 import { AegisxError } from '../core/types.js';
 
@@ -88,14 +88,37 @@ function installHermes(file: string, cfg: McpServerConfig): SetupResult {
   }
 
   const doc = existing === null || existing.trim() === '' ? parseDocument('') : parseDocument(existing);
+  // NOTE: doc.set(key, {}) stores a plain JS object — doc.get(key, true) then
+  // returns that Object, not a YAMLMap. Always create a real node so the
+  // isMap guard below and nested serverMap.set behave as YAML nodes.
   if (!doc.has('mcp_servers')) {
-    doc.set('mcp_servers', {});
+    doc.set('mcp_servers', doc.createNode({}));
+  } else {
+    // keepNode=true → the AST node, not the plain-JS value, so node-type
+    // checks below are reliable.
+    const node = doc.get('mcp_servers', true);
+    // Tolerate the two harmless empty shapes — an unset key (`mcp_servers:`)
+    // and the empty list some setups ship as a default (`mcp_servers: []`):
+    // neither holds data, so both convert cleanly to the mapping Hermes wants.
+    const emptyKey = node === undefined || node === null || (isScalar(node) && node.value === null);
+    const emptyList = isSeq(node) && node.items.length === 0;
+    if (emptyKey || emptyList) {
+      doc.set('mcp_servers', doc.createNode({}));
+    }
   }
-  const servers = doc.get('mcp_servers');
-  if (servers === undefined || typeof servers !== 'object' || servers === null || !('set' in servers)) {
-    throw new AegisxError('user', `${file}: "mcp_servers" exists but is not a YAML mapping — merge the aegisx-memory entry manually`);
+  const servers = doc.get('mcp_servers', true);
+  if (!isMap(servers)) {
+    const found = isSeq(servers)
+      ? `a list with ${servers.items.length} item(s)`
+      : isScalar(servers)
+        ? 'a plain value'
+        : 'an unknown node';
+    throw new AegisxError(
+      'user',
+      `${file}: "mcp_servers" is ${found}, not a mapping — move those entries under named keys (server-name → command/args) or merge the aegisx-memory entry manually`,
+    );
   }
-  const serverMap = servers as { set: (key: string, value: unknown) => void };
+  const serverMap = servers as YAMLMap;
 
   const entry: Record<string, unknown> = { command: cfg.command, args: [...cfg.args], connect_timeout: 30, timeout: 60 };
   if (Object.keys(cfg.env).length > 0) {

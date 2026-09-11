@@ -262,7 +262,9 @@ legacy name when inspecting agent configs.
 **Amendment (v1.5):** `mcp-config --install [--agent hermes|claude|cursor|all]`
 now writes the MCP registration directly into agent config files — creating,
 backing up (`<file>.aegisx-bak`), and merging idempotently; unparseable configs
-are refused rather than overwritten. Doctor's Hermes parser accepts both
+are refused rather than overwritten. The two harmless empty default shapes
+(`mcp_servers:` unset key, `mcp_servers: []`) are converted to a mapping
+in place; non-empty non-mapping shapes still require manual merging. Doctor's Hermes parser accepts both
 quoted and unquoted scalar values, so auto-generated entries are detected.
 
 ---

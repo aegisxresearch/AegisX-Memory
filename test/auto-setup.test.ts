@@ -90,11 +90,42 @@ describe('auto-setup — hermes (YAML)', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('mcp_servers: [broken\n  ::: no');
   });
 
+  it('happy: converts the empty-key default (`mcp_servers:`) to a mapping', () => {
+    const file = hermesFile();
+    write(file, 'model: x\nmcp_servers:\n');
+    const result = installForAgent('hermes', { configPath: file, config: cfg });
+    expect(result.action).toBe('updated');
+    const parsed = parseYaml(fs.readFileSync(file, 'utf8')) as {
+      model?: string;
+      mcp_servers?: Record<string, { command: string }>;
+    };
+    expect(parsed.model).toBe('x');
+    expect(parsed.mcp_servers?.['aegisx-memory']?.command).toBe('node');
+  });
+
+  it('happy: converts an empty-list default (`mcp_servers: []`) to a mapping', () => {
+    const file = hermesFile();
+    write(file, 'mcp_servers: []\n');
+    const result = installForAgent('hermes', { configPath: file, config: cfg });
+    expect(result.action).toBe('updated');
+    const parsed = parseYaml(fs.readFileSync(file, 'utf8')) as {
+      mcp_servers?: Record<string, { command: string }>;
+    };
+    expect(parsed.mcp_servers?.['aegisx-memory']).toBeDefined();
+  });
+
   it('negative: mcp_servers that is not a mapping is refused, not overwritten', () => {
     const file = hermesFile();
     write(file, 'mcp_servers: 42\n');
     expect(() => installForAgent('hermes', { configPath: file, config: cfg })).toThrow(AegisxError);
     expect(fs.readFileSync(file, 'utf8')).toBe('mcp_servers: 42\n');
+  });
+
+  it('negative: a non-empty list of servers is refused (data would be lost)', () => {
+    const file = hermesFile();
+    write(file, 'mcp_servers:\n  - command: "uvx"\n    args: ["time"]\n');
+    expect(() => installForAgent('hermes', { configPath: file, config: cfg })).toThrow(AegisxError);
+    expect(fs.readFileSync(file, 'utf8')).toContain('uvx');
   });
 });
 
