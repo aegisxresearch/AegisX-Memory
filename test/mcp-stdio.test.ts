@@ -70,11 +70,11 @@ interface ToolResult {
 }
 
 suite('mcp stdio — allowlist denial over the wire', () => {
-  it('protocol: the server registers all four memory tools', async () => {
+  it('protocol: the server registers all five memory tools', async () => {
     client = await connectServer();
     const tools = await client.listTools();
     const names = tools.tools.map((t) => t.name).sort();
-    expect(names).toEqual(['aegisxmemory_index', 'aegisxmemory_recall', 'aegisxmemory_remember', 'aegisxmemory_save']);
+    expect(names).toEqual(['aegisxmemory_graph', 'aegisxmemory_index', 'aegisxmemory_recall', 'aegisxmemory_remember', 'aegisxmemory_save']);
   });
 
   it('negative: indexing a non-allowlisted repo returns a clean tool error (no crash)', async () => {

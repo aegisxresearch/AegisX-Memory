@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { installForAgent } from '../src/cli/auto-setup.js';
+import { installForAgent, installRulesForAgent, memoryRulesBlock } from '../src/cli/auto-setup.js';
 import { defaultServerConfig } from '../src/cli/mcp-config.js';
 import { AegisxError } from '../src/core/types.js';
 
@@ -167,5 +167,63 @@ describe('auto-setup — claude/cursor (JSON)', () => {
     write(file, '{ not json !!');
     expect(() => installForAgent('claude', { configPath: file, config: cfg })).toThrow(AegisxError);
     expect(fs.readFileSync(file, 'utf8')).toBe('{ not json !!');
+  });
+});
+
+describe('auto-setup — behavior rules (auto memory)', () => {
+  it('happy: creates Hermes SOUL.md with identity seed + rules block when missing', () => {
+    const file = path.join(workspace, 'home', '.hermes', 'SOUL.md');
+    const result = installRulesForAgent('hermes', { rulesPath: file });
+    expect(result.action).toBe('created');
+    const content = fs.readFileSync(file, 'utf8');
+    expect(content).toContain('# Identity');
+    expect(content).toContain('aegisx-memory:auto-rules BEGIN');
+    expect(content).toContain('recall');
+    expect(content).toContain('save');
+  });
+
+  it('happy: appends the rules block to an existing SOUL.md without touching its content', () => {
+    const file = path.join(workspace, 'home', '.hermes', 'SOUL.md');
+    const original = '# My persona\n\nBe terse.\n';
+    write(file, original);
+    const result = installRulesForAgent('hermes', { rulesPath: file });
+    expect(result.action).toBe('updated');
+    const content = fs.readFileSync(file, 'utf8');
+    expect(content).toContain('# My persona');
+    expect(content).toContain('Be terse.');
+    expect(content).toContain('aegisx-memory:auto-rules BEGIN');
+    expect(result.backupPath).toBe(`${file}.aegisx-bak`);
+    expect(fs.readFileSync(result.backupPath as string, 'utf8')).toBe(original);
+  });
+
+  it('idempotent: second run is byte-identical and reports unchanged', () => {
+    const file = path.join(workspace, 'rules.md');
+    installRulesForAgent('hermes', { rulesPath: file });
+    const first = fs.readFileSync(file, 'utf8');
+    const second = installRulesForAgent('hermes', { rulesPath: file });
+    expect(second.action).toBe('unchanged');
+    expect(second.backupPath).toBeNull();
+    expect(fs.readFileSync(file, 'utf8')).toBe(first);
+  });
+
+  it('update: refreshes the block in place on later runs (keeps marker count at 2)', () => {
+    const file = path.join(workspace, 'rules.md');
+    installRulesForAgent('hermes', { rulesPath: file });
+    // simulate an older block with a stale rule
+    const stale = fs.readFileSync(file, 'utf8').replace('Never store secrets', 'Secrets are fine (stale rule)');
+    fs.writeFileSync(file, stale);
+    const result = installRulesForAgent('hermes', { rulesPath: file });
+    expect(result.action).toBe('updated');
+    const content = fs.readFileSync(file, 'utf8');
+    expect(content).toContain('Never store secrets');
+    expect(content).not.toContain('stale rule');
+    expect(content.split('aegisx-memory:auto-rules BEGIN').length - 1).toBe(1);
+  });
+
+  it('rules reference tool purposes, not client-specific tool names', () => {
+    const block = memoryRulesBlock();
+    expect(block).not.toContain('mcp__');
+    expect(block).toContain('recall');
+    expect(block).toContain('remember');
   });
 });

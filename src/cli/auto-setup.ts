@@ -31,6 +31,8 @@ interface RawOptions {
   configPath?: string;
   /** Registration to write; defaults to the `node <entry> mcp` block. */
   config?: McpServerConfig;
+  /** Override the behavior-rules file location (used by tests). */
+  rulesPath?: string;
 }
 
 function readText(file: string): string | null {
@@ -177,6 +179,86 @@ function installJson(file: string, cfg: McpServerConfig, agent: SetupAgent): Set
   return { agent, configPath: file, action: existing === null ? 'created' : 'updated', backupPath };
 }
 
+/* ------------------------------------------------- behavior rules (auto memory) */
+
+export interface RulesResult {
+  agent: SetupAgent;
+  path: string;
+  /** created = file did not exist · updated = block (re)written · unchanged = already present */
+  action: 'created' | 'updated' | 'unchanged';
+  backupPath: string | null;
+}
+
+const RULES_BEGIN = '<!-- aegisx-memory:auto-rules BEGIN -->';
+const RULES_END = '<!-- aegisx-memory:auto-rules END -->';
+
+/**
+ * The standing-behavior block: makes memory automatic instead of opt-in.
+ * Tool names are generic (they differ per client: Hermes prefixes with
+ * `mcp__aegisx_memory__`), so the rules reference the tool purpose, not wiring.
+ */
+export function memoryRulesBlock(): string {
+  return [
+    RULES_BEGIN,
+    '## AegisX-Memory — automatic project memory (mandatory)',
+    '',
+    '- At the START of every working session, call the aegisx-memory `recall` tool for the current repo before anything else. Use its context block instead of re-reading code it already covers.',
+    '- When you learn a stable project fact (test command, stack, ports, build steps, conventions), persist it immediately with the aegisx-memory `remember` tool under a dot-namespaced key like `project.<name>.<key>`.',
+    '- When you discover a decision, gotcha, convention, or lesson worth keeping, record it with the aegisx-memory knowledge tooling (via `save` handoffs) — do not let it live only in this chat.',
+    '- At the END of every session (or after a meaningful change), call the aegisx-memory `save` tool with a JSON handoff (goal, facts, decisions, nextSteps) so the next session resumes warm.',
+    '- Never store secrets (API keys, passwords, tokens, URLs with credentials) — the engine refuses them; do not try to work around that.',
+    RULES_END,
+  ].join('\n');
+}
+
+/** Seed identity so a freshly created Hermes SOUL.md does not wipe the agent persona. */
+const SOUL_SEED = ['# Identity', '', 'You are Hermes, a direct, technically sharp AI assistant. Match reply length to the weight of the ask; be concrete and verify claims.', ''].join('\n');
+
+/** Default standing-rules file per agent (SOUL.md for Hermes per docs). */
+export function rulesPathFor(agent: SetupAgent): string {
+  switch (agent) {
+    case 'hermes': {
+      const home = process.env['HERMES_HOME'];
+      return home !== undefined && home !== '' ? path.join(home, 'SOUL.md') : path.join(os.homedir(), '.hermes', 'SOUL.md');
+    }
+    case 'claude':
+      return expand(process.env['CLAUDE_CONFIG_DIR'] ?? path.join(os.homedir(), '.claude', 'CLAUDE.md'));
+    case 'cursor':
+      return path.join(os.homedir(), '.cursor', 'rules', 'aegisx-memory.mdc');
+  }
+}
+
+function upsertRulesBlock(existing: string | null, block: string): string {
+  if (existing === null) return `${block}\n`;
+  const re = new RegExp(`${RULES_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${RULES_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+  return re.test(existing) ? existing.replace(re, block) : `${existing.replace(/\s*$/, '')}\n\n${block}\n`;
+}
+
+/**
+ * Install the auto-memory behavior rules into an agent's standing-instructions
+ * file (Hermes SOUL.md, Claude CLAUDE.md, Cursor rules). Idempotent, backed up,
+ * and never touches content outside the marker-wrapped block.
+ */
+export function installRulesForAgent(agent: SetupAgent, options: RawOptions = {}): RulesResult {
+  const file = options.rulesPath ?? rulesPathFor(agent);
+  const existing = readText(file);
+  let content: string;
+  if (existing === null) {
+    content = agent === 'hermes' ? `${SOUL_SEED}\n${memoryRulesBlock()}\n` : `${memoryRulesBlock()}\n`;
+  } else {
+    const updated = upsertRulesBlock(existing, memoryRulesBlock());
+    if (updated === existing) {
+      return { agent, path: file, action: 'unchanged', backupPath: null };
+    }
+    content = updated;
+  }
+  let backupPath: string | null = null;
+  if (existing !== null) backupPath = backup(file, existing);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+  return { agent, path: file, action: existing === null ? 'created' : 'updated', backupPath };
+}
+
 /* ---------------------------------------------------------------- public API */
 
 /**
@@ -199,5 +281,17 @@ export function describeResult(r: SetupResult): string {
       return `✓ ${r.agent}: registered in ${r.configPath} (backup: ${r.backupPath})`;
     case 'unchanged':
       return `✓ ${r.agent}: already registered in ${r.configPath}`;
+  }
+}
+
+/** Human-readable summary line for a behavior-rules install. */
+export function describeRulesResult(r: RulesResult): string {
+  switch (r.action) {
+    case 'created':
+      return `✓ ${r.agent}: behavior rules written to ${r.path}`;
+    case 'updated':
+      return `✓ ${r.agent}: behavior rules updated in ${r.path} (backup: ${r.backupPath})`;
+    case 'unchanged':
+      return `✓ ${r.agent}: behavior rules already present in ${r.path}`;
   }
 }

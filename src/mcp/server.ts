@@ -24,6 +24,40 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Indented text rendering of the graph projection for terminal/agent use:
+ * repos as hubs, then each connected item with its relation label.
+ */
+function renderGraph(g: ReturnType<Engine['graphData']>, maxNodes: number): string {
+  const edgesBySource = new Map<string, Array<{ target: string; label: string }>>();
+  for (const e of g.edges) {
+    const list = edgesBySource.get(e.source) ?? [];
+    list.push({ target: e.target, label: e.label });
+    edgesBySource.set(e.source, list);
+  }
+  const repos = g.nodes.filter((n) => n.kind === 'repo').slice(0, Math.max(4, Math.floor(maxNodes / 6)));
+  const others = g.nodes.filter((n) => n.kind !== 'repo');
+  const lines: string[] = [`memory graph — ${g.nodes.length} nodes / ${g.edges.length} relations`];
+  for (const repo of repos) {
+    lines.push('', `${repo.label}/`, '');
+    let shown = 0;
+    for (const n of others) {
+      if (shown >= Math.ceil(maxNodes / Math.max(1, repos.length)) - 1) break;
+      const rel = (edgesBySource.get(n.id) ?? []).find((e) => e.target === repo.id);
+      if (!rel) continue;
+      lines.push(`  [${n.kind}] ${n.label}${n.sub ? ' — ' + n.sub : ''} (${rel.label} ${repo.label})`);
+      shown++;
+    }
+    if (shown === 0) lines.push('  (no linked items yet)');
+  }
+  if (others.length > 0 && repos.length === 0) {
+    for (const n of others.slice(0, maxNodes)) {
+      lines.push(`  [${n.kind}] ${n.label}${n.sub ? ' — ' + n.sub : ''}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 export async function startMcpServer(): Promise<void> {
   const engine = new Engine(dbPath());
   const server = new McpServer({ name: 'aegisx-memory', version: '1.0.0' });
@@ -57,6 +91,21 @@ export async function startMcpServer(): Promise<void> {
       try {
         engine.remember(key, value, process.cwd());
         return textResult(`saved ${key}`);
+      } catch (err) {
+        return textResult(`error: ${errorMessage(err)}`, true);
+      }
+    },
+  );
+
+  server.tool(
+    'aegisxmemory_graph',
+    'Get a compact node/edge map of stored memory: repos, facts, knowledge (decisions/gotchas), and session handoffs with their relations. Use to orient before a deep task or to visualize relationships at a glance.',
+    {
+      maxNodes: z.number().int().positive().max(200).optional().describe('cap on nodes returned (default 60)'),
+    },
+    async ({ maxNodes }) => {
+      try {
+        return textResult(renderGraph(engine.graphData(), maxNodes ?? 60));
       } catch (err) {
         return textResult(`error: ${errorMessage(err)}`, true);
       }

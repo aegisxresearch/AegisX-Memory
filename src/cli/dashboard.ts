@@ -72,6 +72,9 @@ const PAGE_HTML = `<!doctype html>
   <h2>Recall history — hit vs miss</h2>
   <div class="panel" id="chart"></div>
 
+  <h2>Knowledge graph</h2>
+  <div class="panel" id="graph"></div>
+
   <h2>Per-repo memory</h2>
   <div id="repos"></div>
 
@@ -159,6 +162,127 @@ function render(d) {
     chart.appendChild(el('div', 'sub', 'Hover bars for details · height ≈ tokens returned · teal = hit, amber = cold miss'));
   }
 
+  // knowledge graph: repos as hubs, facts/knowledge/sessions orbiting them
+  const gp = document.getElementById('graph'); gp.replaceChildren();
+  const g = d.graph || { nodes: [], edges: [] };
+  if (!g.nodes.length) {
+    gp.appendChild(el('div', 'empty', 'Graph is empty — index a project or save a fact to grow the map.'));
+  } else {
+    const W = 960, H = 480;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('width', '100%');
+    svg.style.touchAction = 'none';
+    // deterministic radial seed by id hash → stable layout across refreshes
+    const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h >>> 0; };
+    const pos = new Map();
+    for (const n of g.nodes) {
+      const h = hash(n.id);
+      const a = (h % 3600) / 3600 * 2 * Math.PI;
+      const r = n.kind === 'repo' ? 40 : 90 + (h % 120);
+      pos.set(n.id, { x: W / 2 + Math.cos(a) * r * (W / H) * 0.6, y: H / 2 + Math.sin(a) * r, vx: 0, vy: 0, fixed: false });
+    }
+    const byId = new Map(g.nodes.map((n) => [n.id, n]));
+    const color = { repo: '#a78bfa', fact: '#34d399', knowledge: '#fbbf24', session: '#22d3ee' };
+    const lines = [];
+    for (const e of g.edges) {
+      const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('stroke', '#243149'); ln.setAttribute('stroke-width', '1');
+      svg.appendChild(ln); lines.push([e, ln]);
+    }
+    const circles = [];
+    const texts = [];
+    for (const n of g.nodes) {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      const r = n.kind === 'repo' ? 14 : n.kind === 'session' ? 7 : 9;
+      c.setAttribute('r', r); c.setAttribute('fill', color[n.kind] || '#8fa3bf');
+      c.setAttribute('stroke', '#0b0f17'); c.setAttribute('stroke-width', '2');
+      c.style.cursor = 'grab';
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+      t.textContent = (n.sub ? n.label + ' — ' + n.sub : n.label).slice(0, 300);
+      c.appendChild(t);
+      const tx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      tx.textContent = n.label.length > 26 ? n.label.slice(0, 25) + '…' : n.label;
+      tx.setAttribute('font-size', '10');
+      tx.setAttribute('fill', n.kind === 'repo' ? '#a78bfa' : '#7d8ba1');
+      tx.setAttribute('text-anchor', 'middle');
+      tx.style.pointerEvents = 'none';
+      svg.appendChild(c); svg.appendChild(tx);
+      circles.push([n, c]); texts.push([n, tx]);
+    }
+    const legend = el('div', 'sub', '');
+    legend.appendChild(document.createTextNode('● '));
+    for (const [kind, col] of Object.entries(color)) {
+      const b = document.createElement('span'); b.style.color = col; b.textContent = kind + '  ';
+      legend.appendChild(b);
+    }
+    legend.appendChild(document.createTextNode('· drag nodes to untangle'));
+    gp.appendChild(svg); gp.appendChild(legend);
+    // physics: repulsion + spring edges + centering, few ticks per frame
+    let raf = 0;
+    const step = () => {
+      const nodes = g.nodes, P = pos;
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = P.get(nodes[i].id), b = P.get(nodes[j].id);
+          let dx = a.x - b.x, dy = a.y - b.y;
+          let d2 = dx * dx + dy * dy;
+          if (d2 < 1) { dx = 0.5; dy = 0.5; d2 = 0.5; }
+          if (d2 < 16000) { const f = 900 / d2, dl = Math.sqrt(d2); a.vx += dx / dl * f; a.vy += dy / dl * f; b.vx -= dx / dl * f; b.vy -= dy / dl * f; }
+        }
+      }
+      for (const [e] of lines) {
+        const a = P.get(e.source), b = P.get(e.target);
+        if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, d = Math.max(1, Math.hypot(dx, dy));
+        const f = (d - 120) * 0.004;
+        a.vx += dx / d * f * d * 0.01; a.vy += dy / d * f * d * 0.01;
+        b.vx -= dx / d * f * d * 0.01; b.vy -= dy / d * f * d * 0.01;
+      }
+      for (const n of nodes) {
+        const p = P.get(n.id);
+        if (p.fixed) { p.vx = p.vy = 0; continue; }
+        p.vx += (W / 2 - p.x) * 0.002; p.vy += (H / 2 - p.y) * 0.002;
+        p.vx *= 0.85; p.vy *= 0.85;
+        p.x = Math.max(30, Math.min(W - 30, p.x + p.vx));
+        p.y = Math.max(24, Math.min(H - 24, p.y + p.vy));
+      }
+      for (const [e, ln] of lines) {
+        const a = P.get(e.source), b = P.get(e.target);
+        if (a && b) { ln.setAttribute('x1', a.x); ln.setAttribute('y1', a.y); ln.setAttribute('x2', b.x); ln.setAttribute('y2', b.y); }
+      }
+      for (const [n, c] of circles) { const p = P.get(n.id); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); }
+      for (const [n, t] of texts) { const p = P.get(n.id); t.setAttribute('x', p.x); t.setAttribute('y', p.y + 22); }
+      raf = requestAnimationFrame(step);
+    };
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(step);
+    // drag to rearrange
+    let drag = null;
+    svg.addEventListener('pointerdown', (ev) => {
+      const target = ev.target;
+      if (!(target instanceof SVGCircleElement)) return;
+      for (const [n, c] of circles) {
+        if (c === target) {
+          const pt = svg.getBoundingClientRect();
+          drag = { node: n, sx: ev.clientX, sy: ev.clientY, ox: pos.get(n.id).x, oy: pos.get(n.id).y, scale: W / pt.width };
+          pos.get(n.id).fixed = true;
+          svg.setPointerCapture(ev.pointerId);
+          break;
+        }
+      }
+    });
+    svg.addEventListener('pointermove', (ev) => {
+      if (!drag) return;
+      const p = pos.get(drag.node.id);
+      p.x = Math.max(30, Math.min(W - 30, drag.ox + (ev.clientX - drag.sx) * drag.scale));
+      p.y = Math.max(24, Math.min(H - 24, drag.oy + (ev.clientY - drag.sy) * drag.scale));
+    });
+    const endDrag = (ev) => { if (drag) { pos.get(drag.node.id).fixed = false; drag = null; try { svg.releasePointerCapture(ev.pointerId); } catch { /* already released */ } } };
+    svg.addEventListener('pointerup', endDrag);
+    svg.addEventListener('pointercancel', endDrag);
+  }
+
   // repos table
   const rp = document.getElementById('repos'); rp.replaceChildren();
   if (!(d.repos || []).length) {
@@ -219,11 +343,15 @@ function render(d) {
     p.appendChild(ul); sl.appendChild(p);
   }
 }
+let graphCache = { nodes: [], edges: [] };
 async function tick() {
   try {
-    const res = await fetch('/api/data');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    render(await res.json());
+    const [dataRes, graphRes] = await Promise.all([fetch('/api/data'), fetch('/api/graph')]);
+    if (!dataRes.ok) throw new Error('HTTP ' + dataRes.status);
+    if (graphRes.ok) graphCache = await graphRes.json();
+    const data = await dataRes.json();
+    data.graph = graphCache;
+    render(data);
   } catch (err) { /* transient — keep last good render */ }
 }
 tick();
@@ -259,6 +387,11 @@ export function startDashboard(options: DashboardOptions, engine: Engine): Promi
       if (url === '/api/data') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         res.end(JSON.stringify(engine.dashboardData()));
+        return;
+      }
+      if (url === '/api/graph') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(engine.graphData()));
         return;
       }
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });

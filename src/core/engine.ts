@@ -176,6 +176,60 @@ export class Engine {
     };
   }
 
+  /**
+   * Node/edge projection of stored memory for the dashboard knowledge graph.
+   * Node ids are prefixed by kind (`repo:<path>`, `fact:<key>`, `know:<i>`,
+   * `session:<i>`) so the UI can color/style each group; edges record only
+   * structural relations (belongs-to / learned-from / summarizes).
+   */
+  graphData(): {
+    nodes: Array<{ id: string; kind: 'repo' | 'fact' | 'knowledge' | 'session'; label: string; sub: string | null }>
+    edges: Array<{ source: string; target: string; label: string }>
+  } {
+    const nodes: Array<{ id: string; kind: 'repo' | 'fact' | 'knowledge' | 'session'; label: string; sub: string | null }> = [];
+    const edges: Array<{ source: string; label: string; target: string }> = [];
+    const ensureRepo = (repo: string): string => {
+      const id = `repo:${repo}`;
+      if (!nodes.some((n) => n.id === id)) {
+        nodes.push({ id, kind: 'repo', label: repo.split('/').pop() || repo, sub: repo });
+      }
+      return id;
+    };
+
+    for (const f of this.store.listFacts(60)) {
+      const fid = `fact:${f.key}`;
+      nodes.push({ id: fid, kind: 'fact', label: f.key, sub: f.value });
+      if (f.repoHint !== null) {
+        const rid = ensureRepo(f.repoHint);
+        edges.push({ source: fid, target: rid, label: 'belongs to' });
+      }
+    }
+    const knowledge = this.store.listKnowledge(50);
+    knowledge.forEach((k, i) => {
+      if (k.repo === undefined) return; // defensive: store always sets it on reads
+      const kid = `know:${i}`;
+      nodes.push({ id: kid, kind: 'knowledge', label: `${k.kind}: ${k.title}`, sub: k.body });
+      const rid = ensureRepo(k.repo);
+      edges.push({ source: kid, target: rid, label: 'learned in' });
+    });
+    this.store.recentSessions(10).forEach((s, i) => {
+      const sid = `session:${i}`;
+      nodes.push({ id: sid, kind: 'session', label: s.goal, sub: `${s.facts} facts · ${s.decisions} decisions` });
+      const rid = ensureRepo(s.repo);
+      edges.push({ source: sid, target: rid, label: 'summarizes' });
+    });
+    // Repos with no attached items still appear as their own node.
+    for (const repo of this.store.listRepos()) {
+      try {
+        this.guardRepo(repo);
+        ensureRepo(repo);
+      } catch {
+        // hidden by the allowlist policy, same as dashboardData
+      }
+    }
+    return { nodes, edges };
+  }
+
   /** Aggregate stats for a repo (used by `aegisxmemory stats` and MCP). */
   statsFor(repoAbsPath: string): ObservabilityStats {
     const repo = normalizeRepoPath(repoAbsPath);

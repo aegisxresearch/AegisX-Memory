@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { startDashboard } from '../src/cli/dashboard.js';
 import { Engine } from '../src/core/engine.js';
+import { Store } from '../src/core/store.js';
 import { AegisxError } from '../src/core/types.js';
 
 let workspace: string;
@@ -94,5 +95,34 @@ describe('dashboard — local web view', () => {
     expect(page.body).not.toContain('<script>alert(1)</script>');
     const data = await get(stopper.url, '/api/data');
     expect(data.body).toContain('<script>alert(1)</script>'); // JSON transports it verbatim
+  });
+
+  it('graph: /api/graph returns nodes and edges for facts, knowledge, sessions, repos', async () => {
+    const repo = path.join(workspace, 'proj');
+    fs.mkdirSync(repo, { recursive: true });
+    engine.remember('project.demo.stack', 'node', repo);
+    const store = new Store(path.join(workspace, 'memory.sqlite'));
+    store.saveKnowledge(repo, 'decision', 'pick sqlite', 'zero-config local storage', []);
+    store.close();
+    engine.saveSession(repo, { goal: 'bootstrap', facts: ['x'], decisions: [], nextSteps: [] });
+
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const res = await get(stopper.url, '/api/graph');
+    expect(res.type).toContain('application/json');
+    const g = JSON.parse(res.body) as {
+      nodes: Array<{ id: string; kind: string; label: string }>;
+      edges: Array<{ source: string; target: string; label: string }>;
+    };
+    const kinds = new Set(g.nodes.map((n) => n.kind));
+    expect(kinds).toEqual(new Set(['repo', 'fact', 'knowledge', 'session']));
+    const repoNode = g.nodes.find((n) => n.kind === 'repo');
+    expect(repoNode).toBeDefined();
+    // every non-repo node links to exactly its repo hub
+    const linked = g.edges.filter((e) => e.target === repoNode?.id);
+    expect(linked.length).toBe(3);
+    expect(new Set(linked.map((e) => e.label))).toEqual(new Set(['belongs to', 'learned in', 'summarizes']));
+    // page includes the graph section shell
+    const page = await get(stopper.url, '/');
+    expect(page.body).toContain('Knowledge graph');
   });
 });

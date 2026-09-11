@@ -123,7 +123,7 @@ Hermes walkthrough: see `docs/HERMES.md`.
 | `aegisxmemory doctor [path]` | health check: DB integrity, schema, index drift, MCP registrations |
 | `aegisxmemory dashboard` | open a local web dashboard: totals, recall history chart, per-repo hit rates, facts, handoffs |
 | `aegisxmemory mcp` | run the MCP stdio server |
-| `aegisxmemory mcp-config [--agent n] [--bin]` | print MCP registration blocks (hermes/claude/cursor/all) |
+| `aegisxmemory mcp-config [--agent n] [--bin] [--install] [--rules]` | print MCP registration blocks (hermes/claude/cursor/all); `--install` writes them for you, `--rules` also installs auto-memory behavior rules (auto recall at start, auto save at end) |
 | `aegisxmemory dashboard [--port n] [--no-open]` | local web dashboard of your memory (read-only, charts, 127.0.0.1 only) |
 
 Exit codes: `0` success · `1` user error · `2` internal error.
@@ -167,6 +167,7 @@ aegisxmemory dashboard --no-open  # just print the URL (run it in a tmux pane, s
 A read-only view of everything the engine remembers — refreshed every 10s, rendered locally, zero telemetry of its own:
 
 - **Totals cards** — repos, facts, knowledge entries, session handoffs, estimated tokens saved
+- **Knowledge graph** — interactive force-directed map (repos as hubs; facts, decisions/gotchas, and handoffs orbiting them); drag nodes to untangle, hover for details; colors: repo violet · fact green · knowledge amber · session cyan
 - **Recall history chart** — last 50 recalls as bars (teal = hit, amber = cold miss; height ≈ tokens returned; hover for details)
 - **Per-repo table** — files/symbols indexed, scans, recalls, hit rate
 - **Pinned facts & recent handoffs** — with repo hints and timestamps

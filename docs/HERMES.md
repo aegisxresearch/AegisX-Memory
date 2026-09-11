@@ -1,6 +1,6 @@
 # Connecting AegisX-Memory to Hermes Agent
 
-Hermes has a native MCP client. Register AegisX once and its four tools are
+Hermes has a native MCP client. Register AegisX once and its five tools are
 available in every Hermes conversation, on every surface (CLI, TUI, desktop,
 messaging bots).
 
@@ -25,7 +25,7 @@ One command writes the registration for you (creates `~/.hermes/config.yaml`
 if missing, backs it up and merges if present, idempotent if repeated):
 
 ```bash
-aegisxmemory mcp-config --install --agent hermes
+aegisxmemory mcp-config --install --agent hermes --rules   # --rules also writes auto-memory behavior into ~/.hermes/SOUL.md (auto recall at start, auto save at end)
 ```
 
 Then **restart Hermes** — it spawns the MCP server itself on startup; there is
@@ -82,7 +82,7 @@ Restart Hermes, then:
 hermes chat -q "List your aegisx tools"
 ```
 
-You should see the four tools registered with the prefix
+You should see the five tools registered with the prefix
 `mcp_aegisx_memory_*`:
 
 | Hermes tool name | Purpose |
@@ -91,6 +91,7 @@ You should see the four tools registered with the prefix
 | `mcp_aegisx_memory_aegisxmemory_remember` | store a stable fact |
 | `mcp_aegisx_memory_aegisxmemory_save` | store the session handoff |
 | `mcp_aegisx_memory_aegisxmemory_index` | incremental repo index |
+| `mcp_aegisx_memory_aegisxmemory_graph` | compact node/edge map of the memory (repos, facts, knowledge, handoffs) |
 
 Sanity-check outside Hermes (protocol-level test, no Hermes needed):
 
@@ -102,7 +103,7 @@ printf '%s\n' \
   | node dist/cli/index.js mcp | grep -o '"name":"aegisxmemory_[a-z_]*"'
 ```
 
-Expected: `aegisxmemory_recall`, `aegisxmemory_remember`, `aegisxmemory_save`, `aegisxmemory_index`.
+Expected: `aegisxmemory_recall`, `aegisxmemory_remember`, `aegisxmemory_save`, `aegisxmemory_index`, `aegisxmemory_graph`.
 
 ## 5. Daily workflow with Hermes
 

@@ -543,6 +543,21 @@ export class Store {
     return rows.map((row) => ({ key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at }));
   }
 
+  /** All knowledge records across repos, newest first (dashboard graph; owner-facing). */
+  listKnowledge(limit = 50): KnowledgeRecord[] {
+    const rows = this.prepared(
+      `SELECT repo, kind, title, body, anchors, updated_at FROM knowledge ORDER BY updated_at DESC, id DESC LIMIT ?`,
+    ).all(limit) as Array<{ repo: string; kind: string; title: string; body: string; anchors: string; updated_at: string }>;
+    return rows.map((row) => ({
+      kind: row.kind as KnowledgeKind,
+      title: row.title,
+      body: row.body,
+      anchors: JSON.parse(row.anchors) as string[],
+      updatedAt: row.updated_at,
+      repo: row.repo,
+    }));
+  }
+
   /** Recent handoffs across repos with item counts (no full bodies needed). */
   recentSessions(limit = 20): Array<{ repo: string; goal: string; facts: number; decisions: number; nextSteps: number; createdAt: string }> {
     const rows = this.prepared(
