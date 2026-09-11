@@ -61,13 +61,23 @@ echo '{"goal":"…","facts":[…],"decisions":[…],"nextSteps":[…]}' | aegisx
 aegisxmemory remember project.myapp.test-cmd "npm test"   # anytime: pin a stable fact
 ```
 
-Or generate a ready-to-paste registration block for your MCP client:
+Register it in your agent — automatically (no hand-editing):
+
+```bash
+aegisxmemory mcp-config --install --agent hermes   # writes the block into ~/.hermes/config.yaml
+aegisxmemory mcp-config --install                  # or all known agents (Hermes + Claude + Cursor)
+```
+
+The installer merges the entry into the existing config (backing the file up
+first, refusing configs that do not parse, and staying idempotent — run it
+twice and nothing doubles). Then just **restart your agent**: MCP servers are
+spawned by the agent itself, so there is nothing to start by hand.
+
+Prefer paste-in yourself? Print the block instead:
 
 ```bash
 aegisxmemory mcp-config                  # Hermes + Claude + Cursor, one output
-aegisxmemory mcp-config --agent hermes   # YAML block for ~/.hermes/config.yaml
 aegisxmemory mcp-config --agent claude   # strict JSON for claude_desktop_config.json / .mcp.json
-aegisxmemory mcp-config --agent cursor   # strict JSON for ~/.cursor/mcp.json
 aegisxmemory mcp-config --bin            # use `aegisxmemory` from PATH (after npm link)
 ```
 

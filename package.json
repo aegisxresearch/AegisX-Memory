@@ -26,6 +26,7 @@
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "ignore": "^7.0.0",
+    "yaml": "^2.9.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

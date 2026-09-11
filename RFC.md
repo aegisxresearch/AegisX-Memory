@@ -259,6 +259,12 @@ All commands exit 0 on success, 1 on user error, 2 on internal error. Errors pri
 before the rename used the short `aegisx` name; `doctor` still recognizes the
 legacy name when inspecting agent configs.
 
+**Amendment (v1.5):** `mcp-config --install [--agent hermes|claude|cursor|all]`
+now writes the MCP registration directly into agent config files — creating,
+backing up (`<file>.aegisx-bak`), and merging idempotently; unparseable configs
+are refused rather than overwritten. Doctor's Hermes parser accepts both
+quoted and unquoted scalar values, so auto-generated entries are detected.
+
 ---
 
 ## 6. Verification Plan (Dual-Gate)

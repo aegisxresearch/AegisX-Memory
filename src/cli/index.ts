@@ -10,6 +10,7 @@ import { Engine, DEFAULT_TOKEN_BUDGET } from '../core/engine.js';
 import { aegisxHome, dbPath, normalizeRepoPath } from '../core/paths.js';
 import { AegisxError } from '../core/types.js';
 import { binServerConfig, defaultServerConfig, parseAgentArg, renderConfig } from './mcp-config.js';
+import { SETUP_AGENTS, describeResult, installForAgent, type SetupAgent } from './auto-setup.js';
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
 
 const program = new Command();
@@ -425,10 +426,19 @@ program
   .description('print ready-to-paste MCP registration blocks (hermes | claude | cursor | all)')
   .option('--agent <name>', 'target agent: hermes, claude, cursor, or all', 'all')
   .option('--bin', 'assume `aegisxmemory` is on PATH (npm link) instead of an absolute node entry', false)
-  .action((opts: { agent: string; bin: boolean }) => {
+  .option('--install', 'write the registration straight into the agent config(s) — backed up, idempotent, no hand-editing', false)
+  .action((opts: { agent: string; bin: boolean; install: boolean }) => {
     run(() => {
       const agent = parseAgentArg(opts.agent);
       const cfg = opts.bin ? binServerConfig() : defaultServerConfig();
+      if (opts.install) {
+        const targets = agent === 'all' ? SETUP_AGENTS : [agent as SetupAgent];
+        for (const target of targets) {
+          process.stdout.write(describeResult(installForAgent(target, { config: cfg })) + '\n');
+        }
+        process.stdout.write('\nDone. Restart your agent (MCP has no hot reload) — the memory tools load automatically.\n');
+        return;
+      }
       process.stdout.write(renderConfig(agent, cfg) + '\n');
     });
   });

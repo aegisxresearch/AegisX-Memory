@@ -226,12 +226,15 @@ export function hermesEntry(lines: string[]): { command: string; args: string[] 
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i] ?? '';
     if (/^\S/.test(line)) break; // next top-level key → end of block
-    const cmd = /^\s*command:\s*"([^"]+)"/.exec(line);
-    if (cmd !== null && cmd[1] !== undefined) command = cmd[1];
+    const cmd = /^\s*command:\s*(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(line);
+    if (cmd !== null) {
+      const value = cmd[1] ?? cmd[2] ?? cmd[3] ?? '';
+      if (value !== '') command = value;
+    }
     const arg = /args:\s*\[(.*)\]/.exec(line);
     if (arg !== null && arg[1] !== undefined) {
       for (const raw of arg[1].split(',')) {
-        const clean = raw.trim().replace(/^"|"$/g, '');
+        const clean = raw.trim().replace(/^["']|["']$/g, '');
         if (clean !== '') args.push(clean);
       }
     }

@@ -21,13 +21,22 @@ npm link                 # optional: makes `aegisxmemory` available on PATH
 
 ## 3. Register the MCP server
 
-The fastest way — let AegisX print the exact block for you:
+One command writes the registration for you (creates `~/.hermes/config.yaml`
+if missing, backs it up and merges if present, idempotent if repeated):
+
+```bash
+aegisxmemory mcp-config --install --agent hermes
+```
+
+Then **restart Hermes** — it spawns the MCP server itself on startup; there is
+nothing to start by hand.
+
+Prefer to paste it yourself? Print the block:
 
 ```bash
 aegisxmemory mcp-config --agent hermes          # or --bin after npm link
 ```
 
-Then merge the printed `mcp_servers:` output into `~/.hermes/config.yaml`.
 Manually, it looks like:
 
 ```yaml
