@@ -16,7 +16,11 @@ import {
 import { buildFtsQuery } from './fts.js';
 import { secureDbFile } from './db-perms.js';
 
-export const FACT_VALUE_MAX = 500;
+/** Fact values above this length are truncated, never rejected — a failed
+ *  remember() burns an agent turn; a slightly-shortened value does not.
+ *  Kept well above typical hand-authored facts, far below bloat. */
+export const FACT_VALUE_MAX = 2_000;
+export const FACT_VALUE_WARN = 500;
 export const KNOWLEDGE_TITLE_MAX = 200;
 export const KNOWLEDGE_BODY_MAX = 4_000;
 export const HANDOFF_STRING_MAX = 1_000;
@@ -167,10 +171,12 @@ export class Store {
       throw new AegisxError('user', 'fact value must not be empty');
     }
     if (trimmed.length > FACT_VALUE_MAX) {
-      throw new AegisxError(
-        'user',
-        `fact value too long (${trimmed.length} > ${FACT_VALUE_MAX} chars): split into smaller facts`,
-      );
+      // Truncate instead of rejecting: the agent already spent a turn on the
+      // call, and a shortened fact is still useful. The kept part is the head;
+      // the cut is logged on stderr (recall/JSON paths keep it silent).
+      const cut = trimmed.length - FACT_VALUE_MAX;
+      process.stderr.write(`aegisxmemory: fact value truncated (${cut} chars over ${FACT_VALUE_MAX} limit)\n`);
+      return trimmed.slice(0, FACT_VALUE_MAX);
     }
     return trimmed;
   }

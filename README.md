@@ -389,7 +389,7 @@ aegisxmemory remember project.myapp.dev-port "3000"
 aegisxmemory forget project.myapp.dev-port
 ```
 
-Keys: lowercase letters, digits, dot, underscore, hyphen (max 128 chars). Values: max 500 chars, secret-shaped values are refused. See [§10](#10-facts-naming-limits-examples).
+Keys: lowercase letters, digits, dot, underscore, hyphen (max 128 chars). Values: over 2,000 chars are truncated (never rejected); secret-shaped values are refused. See [§10](#10-facts-naming-limits-examples).
 </details>
 
 <details>
@@ -435,7 +435,7 @@ project.<project-name>.<key>
 **Rules** (enforced, with clear errors):
 
 - key: `/^[a-z0-9][a-z0-9._-]{0,127}$/` — lowercase letters, digits, dot, underscore, hyphen; max 128 chars
-- value: max 500 chars — split bigger facts into smaller ones
+- value: over 2,000 chars are truncated, never rejected — a failed `remember` burns an agent turn; a shortened fact does not. Keep facts concise anyway (≤500 chars is the sweet spot)
 - secrets are refused: token prefixes (`sk-`, `ghp_`, `AKIA…`, …), `user:pass@host` URLs, `password=…`-style assignments — one shared detector (`src/core/secrets.ts`) powers every write path
 
 ## 11. Session handoffs: the JSON contract

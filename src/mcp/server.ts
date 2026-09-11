@@ -85,7 +85,7 @@ export async function startMcpServer(): Promise<void> {
     'Save a stable fact under a dot-namespaced key, e.g. key "project.myapp.test-cmd" value "npm test". Refuses secrets.',
     {
       key: z.string().describe('dot-namespaced key: lowercase letters, digits, dot, underscore, hyphen'),
-      value: z.string().describe('the fact (max 500 chars)'),
+      value: z.string().describe('the fact — kept concise preferred; values over 2000 chars are truncated, never rejected'),
     },
     async ({ key, value }) => {
       try {

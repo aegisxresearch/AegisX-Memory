@@ -389,7 +389,7 @@ aegisxmemory remember project.myapp.dev-port "3000"
 aegisxmemory forget project.myapp.dev-port
 ```
 
-Key: huruf kecil, angka, titik, underscore, tanda hubung (maks 128 karakter). Value: maks 500 karakter, value berbentuk secret ditolak. Lihat [§10](#10-fakta-penamaan-batasan-contoh).
+Key: huruf kecil, angka, titik, underscore, tanda hubung (maks 128 karakter). Value: lebih dari 2.000 karakter dipotong (tidak pernah ditolak); value berbentuk secret ditolak. Lihat [§10](#10-fakta-penamaan-batasan-contoh).
 </details>
 
 <details>
@@ -435,7 +435,7 @@ project.<nama-project>.<key>
 **Aturan** (ditegakkan, dengan error yang jelas):
 
 - key: `/^[a-z0-9][a-z0-9._-]{0,127}$/` — huruf kecil, angka, titik, underscore, tanda hubung; maksimal 128 karakter
-- value: maksimal 500 karakter — pecah fakta besar menjadi fakta-fakta kecil
+- value: lebih dari 2.000 karakter dipotong, tidak pernah ditolak — `remember` yang gagal membakar satu giliran agent; fakta yang sedikit dipendekkan tidak. Tetap tulis fakta secukupnya (≤500 karakter adalah titik manisnya)
 - secret ditolak: prefix token (`sk-`, `ghp_`, `AKIA…`, …), URL `user:pass@host`, assignment berpola `password=…` — satu detector bersama (`src/core/secrets.ts`) dipakai semua jalur tulis
 
 ## 11. Session handoff: kontrak JSON

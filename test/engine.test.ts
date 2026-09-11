@@ -162,6 +162,22 @@ describe('Gate 2 — negative edge cases', () => {
     ).toThrow(/secret/i);
   });
 
+  it('truncates oversized fact values instead of rejecting (agent turns are expensive)', () => {
+    const longValue = `${'x'.repeat(2_500)}-tail-that-must-be-cut`;
+    const fact = engine.remember('cfg.big-note', longValue, repoDir);
+    expect(fact.value.length).toBe(2_000); // FACT_VALUE_MAX
+    expect(fact.value.endsWith('-tail-that-must-be-cut')).toBe(false); // head is kept
+    // readable back from the store
+    const stored = engine.recall(null, repoDir);
+    void stored;
+    expect(fact.value.startsWith('xxx')).toBe(true);
+  });
+
+  it('secret refusal wins over truncation (no path stores a secret)', () => {
+    const longSecret = `password=${'a'.repeat(3_000)}`;
+    expect(() => engine.remember('cfg.leak', longSecret, repoDir)).toThrow(/secret/i);
+  });
+
   it('never indexes secret-bearing files (.env, keys, credentials)', () => {
     writeRepoFile('.env', 'API_KEY=sk-abcdefghij0123456789abcdefghij\n');
     writeRepoFile('certs/server.pem', '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n');
