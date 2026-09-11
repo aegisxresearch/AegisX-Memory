@@ -14,6 +14,31 @@ Every new agent session re-explores the repo: architecture, decisions, gotchas, 
 
 Everything is **hash-invalidated**: code knowledge is keyed to file content hashes (SHA-256), so the moment a file changes, its stale memories are gone. No timestamps, no heuristics — 0 stale answers.
 
+## Install
+
+One line from GitHub (needs node ≥ 20, npm, git):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
+```
+
+What it does: clones this repo to `~/.aegisx-app`, `npm ci` + build, symlinks
+the `aegisx` CLI into `~/.local/bin` (adds it to PATH if missing), and runs
+`aegisx init`. Re-running the script updates an existing install.
+
+Prefer npm instead? Install straight from the GitHub repo:
+
+```bash
+npm install -g github:aegisxresearch/AegisX-Memory
+```
+
+Or from a local clone:
+
+```bash
+git clone https://github.com/aegisxresearch/AegisX-Memory.git
+cd AegisX-Memory && npm install && npm link
+```
+
 ## Quick start
 
 ```bash
