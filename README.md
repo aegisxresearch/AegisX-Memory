@@ -6,6 +6,8 @@
 ![node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
+**English** (this document) | **Bahasa Indonesia** → [`README.id.md`](README.id.md)
+
 Every new AI agent session re-explores your repo: architecture, decisions, gotchas, test commands — re-learned from scratch, every single time. AegisX-Memory fixes this with a **local-first, zero-cloud memory layer** that injects *only relevant* context at session start, under a hard token budget.
 
 - 🧠 **Remembers** — facts, decisions, gotchas, session handoffs, code structure
