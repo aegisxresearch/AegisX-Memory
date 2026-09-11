@@ -16,6 +16,30 @@ Setiap sesi baru AI agent menjelajahi ulang repo Anda: arsitektur, keputusan, je
 - 🤖 **Ramah-agent** — 5 tool MCP yang bekerja dengan Hermes, Claude, Cursor, atau klien MCP mana pun
 - 📊 **Terpantau** — dashboard web lokal dengan knowledge graph interaktif
 
+## ⚡ TL;DR — cuma 2 perintah, lalu tinggal ngobrol
+
+**Langkah 1 — install:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
+```
+
+**Langkah 2 — hubungkan ke agent Anda** (ganti `hermes` dengan `claude` atau `cursor` kalau perlu):
+
+```bash
+aegisxmemory mcp-config --install --agent hermes --rules
+```
+
+**Langkah 3 — restart agent Anda.** Selesai. Tidak ada lagi yang perlu dijalankan — selamanya.
+
+Mulai sekarang loop memorinya otomatis (flag `--rules` membuat agent recall di awal sesi dan save di akhir sesi dengan sendirinya). Anda tinggal kerja dan ngobrol normal:
+
+> *"build a login feature"* → agent bekerja → memori ter-update sendiri → sesi berikutnya dia ingat semuanya.
+
+Kalau sewaktu-waktu mau mengintip: `aegisxmemory dashboard` membuka tampilan web dari yang dia ingat. **Semua yang di bawah garis ini adalah bacaan opsional** — cara kerjanya, apa yang terpasang, dan bahan rujukan.
+
+---
+
 ---
 
 ## 📖 Daftar Isi
@@ -108,6 +132,8 @@ aegisxmemory init          # jalan juga kalau tadi terlewat
 ```
 
 ## 4. Quick start lima menit
+
+> Sudah menjalankan 2 perintah TL;DR di atas dan menghubungkan agent Anda? **Bagian ini boleh dilewati** — agent menjalankan semua ini sendiri. Langkah di bawah adalah untuk memakai AegisX dari terminal biasa, tanpa agent.
 
 ```bash
 # 0. sekali saja: buat memori home (~/.aegisx)
@@ -251,7 +277,7 @@ Semua perintah yang berbasis repo memakai **direktori kerja saat ini** — `cd` 
 
 ### 7.1 Kalau agent sudah terhubung (kondisi normal)
 
-Anda bilang; agent yang memanggil tool:
+Dengan `--rules` terpasang, ini terjadi **dengan sendirinya** — Anda tidak perlu memintanya. Frasa-frasa di bawah hanyalah yang *bisa* Anda ucapkan kalau mau mengarahkan:
 
 | Anda bilang | Agent memanggil |
 |---|---|

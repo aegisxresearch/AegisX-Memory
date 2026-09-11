@@ -16,6 +16,30 @@ Every new AI agent session re-explores your repo: architecture, decisions, gotch
 - 🤖 **Agent-native** — 5 MCP tools work with Hermes, Claude, Cursor, or any MCP client
 - 📊 **Observable** — local web dashboard with an interactive knowledge graph
 
+## ⚡ TL;DR — only 2 commands, then just talk
+
+**Step 1 — install:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
+```
+
+**Step 2 — connect it to your agent** (swap `hermes` for `claude` or `cursor` if needed):
+
+```bash
+aegisxmemory mcp-config --install --agent hermes --rules
+```
+
+**Step 3 — restart your agent.** Done. Nothing else to run — ever.
+
+From now on the memory loop is automatic (the `--rules` flag makes the agent recall at session start and save at session end by itself). You just work and talk normally:
+
+> *"buatkan fitur login"* → agent works → memory updates itself → next session it remembers everything.
+
+If you ever want to poke at it manually: `aegisxmemory dashboard` opens a web view of what it remembers. **Everything below this line is optional reading** — how it works, what got installed, and reference material.
+
+---
+
 ---
 
 ## 📖 Table of Contents
@@ -108,6 +132,8 @@ aegisxmemory init          # first run also works if you skipped it above
 ```
 
 ## 4. Five-minute quick start
+
+> Already did the 2 TL;DR commands above and connected your agent? **You can skip this section** — the agent runs all of this itself. The steps below are for using AegisX from a plain terminal, without an agent.
 
 ```bash
 # 0. one-time: create the memory home (~/.aegisx)
@@ -251,7 +277,7 @@ Everything repo-aware uses the **current working directory** — `cd` into the p
 
 ### 7.1 If your agent is connected (the normal case)
 
-You say things; the agent calls the tools:
+With `--rules` installed this happens **by itself** — you do not have to ask. These phrases are just what you *can* say if you want to nudge it:
 
 | You say | Agent calls |
 |---|---|
