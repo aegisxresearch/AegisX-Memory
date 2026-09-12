@@ -340,7 +340,7 @@ A read-only view of everything the engine remembers — refreshed every 10 s, re
 - **Knowledge graph** — interactive force-directed map (repos as hubs; facts, decisions/gotchas, and handoffs orbiting them); drag nodes to untangle, hover for details; colors: repo violet · fact green · knowledge amber · session cyan
 - **Recall history chart** — last 50 recalls as bars (teal = hit, amber = cold miss; height ≈ tokens returned; hover for details)
 - **Per-repo table** — files/symbols indexed, scans, recalls, hit rate
-- **Pinned facts & recent handoffs** — with repo hints and timestamps
+- **Pinned facts & recent handoffs** — with repo hints and timestamps; a key that was re-pinned carries a **changed** badge plus the value it replaced (`was: 3000 (changed 2026-09-12)`), the same signal recall gives the agent
 
 The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose it), serves inline CSS/JS with **no CDN or external requests** (works offline), and renders all stored data via `textContent`, so a malicious fact value can never inject markup into the page.
 
@@ -639,7 +639,7 @@ CLI / MCP ──► Engine ──► FactStore ─┐
 - **MCP servers** (`src/mcp/`) — stdio (`server.ts`) and StreamableHTTP (`http-server.ts`) exposing the same Engine.
 - **Engine** (`src/core/engine.ts`) — orchestration: recall budgeting, guards, telemetry, graph projection.
 - **Store** (`src/core/store.ts`) — SQLite persistence: facts, knowledge (+FTS5), sessions, telemetry.
-- **Indexer** (`src/indexer/`) — hash-diff repository walk; extracts symbols/TODOs with per-language extractors.
+- **Indexer** (`src/indexer/`) — hash-diff repository walk; extracts symbols/TODOs with per-language extractors. Recognised declarations: JS/TS, Python, Ruby (`def`), Go (`func`, `type`), Rust (`fn`, `mod`, `struct`, `impl`, `trait`), Java, C#, Kotlin (`class`, `interface`, `enum`, `record`, `object`, `namespace`, `union`) and C/C++ return-type functions (`int main(`, `std::string name(`) — column-0 declarations only, so indented members stay out of the index.
 - **Secrets** (`src/core/secrets.ts`) — the single secret detector used by every write path.
 
 Recall composition, under a hard token budget: repo-anchored facts → FTS-ranked knowledge → symbols (ranked by query, deterministic top-list otherwise) → last handoff → structure brief. Overflow drops lowest-priority items first — never mid-fact.

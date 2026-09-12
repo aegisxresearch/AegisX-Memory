@@ -340,7 +340,7 @@ Tampilan read-only dari semua yang diingat engine — menyegarkan tiap 10 detik,
 - **Knowledge graph** — peta force-directed interaktif (repo sebagai hub; fakta, keputusan/gotcha, dan handoff mengorbitnya); drag node untuk merapikan, hover untuk detail; warna: repo ungu · fakta hijau · knowledge kuning · sesi cyan
 - **Graf riwayat recall** — 50 recall terakhir sebagai bar (teal = hit, kuning = miss dingin; tinggi ≈ token yang dikembalikan; hover untuk detail)
 - **Tabel per-repo** — file/simbol terindeks, scan, recall, hit rate
-- **Fakta ter-pin & handoff terbaru** — dengan repo dan timestamp
+- **Fakta ter-pin & handoff terbaru** — dengan repo dan timestamp; fakta yang di-pin ulang membawa badge **changed** beserta nilai yang digantikannya (`was: 3000 (changed 2026-09-12)`), sinyal yang sama dengan yang diterima agent saat recall
 
 Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membukanya), menyajikan CSS/JS inline **tanpa CDN atau request eksternal** (bekerja offline), dan merender semua data via `textContent`, jadi nilai fakta jahat tidak akan pernah bisa menyuntikkan markup ke halaman.
 
@@ -639,7 +639,7 @@ CLI / MCP ──► Engine ──► FactStore ─┐
 - **Server MCP** (`src/mcp/`) — stdio (`server.ts`) dan StreamableHTTP (`http-server.ts`) yang mengekspos Engine yang sama.
 - **Engine** (`src/core/engine.ts`) — orkestrasi: budgeting recall, guard, telemetri, proyeksi graph.
 - **Store** (`src/core/store.ts`) — persistensi SQLite: fakta, knowledge (+FTS5), sesi, telemetri.
-- **Indexer** (`src/indexer/`) — walk repositori berbasis hash-diff; mengekstrak simbol/TODO dengan extractor per bahasa.
+- **Indexer** (`src/indexer/`) — walk repositori berbasis hash-diff; mengekstrak simbol/TODO dengan extractor per bahasa. Deklarasi yang dikenali: JS/TS, Python, Ruby (`def`), Go (`func`, `type`), Rust (`fn`, `mod`, `struct`, `impl`, `trait`), Java, C#, Kotlin (`class`, `interface`, `enum`, `record`, `object`, `namespace`, `union`) dan fungsi bergaya C/C++ (`int main(`, `std::string name(`) — hanya deklarasi di kolom 0, jadi anggota yang di-indent tidak masuk indeks.
 - **Secrets** (`src/core/secrets.ts`) — detector secret tunggal yang dipakai semua jalur tulis.
 
 Komposisi recall, dalam batas token yang ketat: fakta milik repo → knowledge berperingkat FTS → simbol (diperingkat query, daftar teratas deterministik bila tanpa query) → handoff terakhir → ringkasan struktur. Kelebihan membuang item prioritas terendah lebih dulu — tidak pernah di tengah fakta.
