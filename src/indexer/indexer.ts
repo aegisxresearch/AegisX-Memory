@@ -25,13 +25,51 @@ const DEFAULT_SKIP_DIRS = new Set([
   'coverage', '.venv', 'venv', '__pycache__', '.idea', '.vscode', '.aegisx-cache',
 ]);
 
-/** Regex for language-agnostic top-level declarations. */
-const SYMBOL_LINE =
-  /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(function|class|def|struct|impl|trait|type|interface|enum)\s+([A-Za-z_$][\w$]*)/;
+/** Declaration modifiers, any order, repeats allowed: JS/TS (`export`, `async`,
+ *  `declare`), Java/C#/Kotlin (`public`, `sealed`, `data`, `suspend`), Rust
+ *  (`pub`, `unsafe`) and C/C++ (`extern`, `inline`, `typedef`, `virtual`). */
+const SYMBOL_MODIFIER =
+  '(?:export|default|async|public|private|protected|internal|static|final|abstract|sealed|open|override|virtual|partial|data|pub|unsafe|inline|extern|synchronized|native|suspend|typedef|operator|declare)';
 
-/** Every keyword SYMBOL_LINE can capture — i.e. everything that is a real declaration. */
+/**
+ * Regex for language-agnostic **top-level** declarations (column 0 only: there
+ * is no extension allowlist, so indented lines would also match prose inside
+ * docs and template strings). Covers the declaration keyword of each mainstream
+ * language family, the modifiers that may precede it (`public class`,
+ * `pub unsafe fn`, `data class`), annotations, C++/C# `enum class` /
+ * `record struct`, generic parameters (Kotlin `fun <T> map`, Go
+ * `func Map[T any]`) and Go receivers (`func (s *Server) Start`).
+ */
+const SYMBOL_LINE = new RegExp(
+  '^(?:@[\\w.]+\\s*)*' +
+    `(?:${SYMBOL_MODIFIER}\\s+)*` +
+    '(?:"[A-Za-z_]+"\\s*)?' +
+    '(function|class|def|struct|impl|trait|type|interface|enum|union|module|record|object|namespace|func|fn|fun|mod)\\b' +
+    '(?:\\s+(?:class|struct))?' +
+    '\\s+(?:\\([^)]*\\)\\s*)?(?:<[^>]*>\\s*)?(?:\\[[^\\]]*\\]\\s*)?' +
+    '([A-Za-z_$][\\w$]*(?:(?:\\.|::)[A-Za-z_$][\\w$]*)*)',
+);
+
+/**
+ * C-family / Java-style signatures that carry no declaration keyword, e.g.
+ * `int main(int argc, char **argv)`, `std::string name(void)` or
+ * `public async Task<Order> PlaceAsync(`. Restricted to a curated builtin-type
+ * list plus Capitalized/qualified type names, so control flow (`else if (`,
+ * `return f(`) and assignments (`Foo bar = …`) never look like declarations.
+ */
+const TYPED_FUNCTION_LINE = new RegExp(
+  '^(?:(?:export|public|private|protected|internal|static|final|abstract|virtual|inline|extern|synchronized|native|override|sealed|unsafe|async|const|volatile|unsigned|signed|long|short)\\s+)*' +
+    '(?:void|bool|auto|var|int|char|float|double|long|short|unsigned|signed|size_t|ssize_t|wchar_t|u?int(?:8|16|32|64)_t|string|object|byte|decimal' +
+    '|[A-Z][\\w]*(?:<[^>]*>)?' +
+    '|[A-Za-z_]\\w*(?:::[A-Za-z_]\\w*)+(?:<[^>]*>)?)' +
+    '(?:\\s*[*&])?\\s+([A-Za-z_]\\w*(?:::\\w+)*)\\s*\\(',
+);
+
+/** Every kind SYMBOL_LINE / TYPED_FUNCTION_LINE can emit — i.e. everything that
+ *  is a real declaration (typed signatures always emit `function`). */
 export const DECLARATION_KINDS: readonly SymbolKind[] = [
   'function', 'class', 'def', 'struct', 'impl', 'trait', 'type', 'interface', 'enum',
+  'union', 'module', 'mod', 'record', 'object', 'namespace', 'func', 'fn', 'fun',
 ];
 /** Kinds a query-less recall lists: declarations, then TODO/FIXME markers. */
 export const RECALLABLE_KINDS: readonly SymbolKind[] = [...DECLARATION_KINDS, 'marker'];
@@ -456,6 +494,11 @@ export function extractSymbols(filePath: string, content: string): SymbolRecord[
     const sym = SYMBOL_LINE.exec(line);
     if (sym !== null) {
       out.push({ filePath, kind: sym[1] as SymbolKind, name: sym[2] ?? null, line: i + 1 });
+      continue;
+    }
+    const typed = TYPED_FUNCTION_LINE.exec(line);
+    if (typed !== null) {
+      out.push({ filePath, kind: 'function', name: typed[1] ?? null, line: i + 1 });
       continue;
     }
     const marker = MARKER_LINE.exec(line);

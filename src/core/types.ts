@@ -1,10 +1,10 @@
 /** Core contracts shared across engine, CLI, indexer and MCP layers. */
 
 /**
- * Kinds the indexer emits: the declaration keywords it recognises (one per
- * language family — `def` for Python, `struct` for Rust, …) plus the two
- * synthetic kinds it derives from markers and imports. Keep in sync with
- * SYMBOL_LINE in src/indexer/indexer.ts.
+ * Kinds the indexer emits. Each declaration kind mirrors the source keyword it
+ * matched (`def` for Python, `fn` for Rust, `func` for Go, `public class` →
+ * `class`, …), plus the two synthetic kinds derived from markers and imports.
+ * Keep in sync with SYMBOL_LINE / TYPED_FUNCTION_LINE in src/indexer/indexer.ts.
  */
 export type SymbolKind =
   | 'function'
@@ -16,6 +16,15 @@ export type SymbolKind =
   | 'type'
   | 'interface'
   | 'enum'
+  | 'union'
+  | 'module'
+  | 'mod'
+  | 'record'
+  | 'object'
+  | 'namespace'
+  | 'func'
+  | 'fn'
+  | 'fun'
   | 'marker'
   | 'import';
 export type KnowledgeKind = 'decision' | 'gotcha' | 'convention' | 'lesson';
