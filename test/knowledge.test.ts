@@ -8,6 +8,14 @@ import { normalizeRepoPath } from '../src/core/paths.js';
 import { KNOWLEDGE_BACKFILL_META, KNOWLEDGE_TITLE_MAX, Store } from '../src/core/store.js';
 import { AegisxError, type KnowledgeKind } from '../src/core/types.js';
 
+/**
+ * An obviously fake, token-shaped string, assembled from parts so that no
+ * literal in this tree matches a credential pattern on its own: scanners (the
+ * pre-push guard, GitHub's own) key on the pattern alone, which is exactly what
+ * `containsSecret` is here to exercise.
+ */
+const FAKE_GITHUB_PAT = 'ghp_' + 'abcdefghijklmnopqrstuvwxyz0123456789';
+
 let workspace: string;
 let repo: string;
 let dbFile: string;
@@ -207,7 +215,7 @@ describe('knowledge — the save path records handoff notes', () => {
     const engine = new Engine(dbFile);
     try {
       expect(() =>
-        engine.saveSession(repo, handoff('leak', ['rotate ghp_abcdefghijklmnopqrstuvwxyz0123456789'])),
+        engine.saveSession(repo, handoff('leak', [`rotate ${FAKE_GITHUB_PAT}`])),
       ).toThrow(AegisxError);
       expect(store.countKnowledge()).toBe(0);
       expect(store.countSessions()).toBe(0);
@@ -358,7 +366,7 @@ describe('knowledge — one-time backfill of handoffs written before knowledge h
   it('does not resurrect a credential from a handoff written before the secret scan', () => {
     const legacy = path.join(workspace, 'legacy-secret.sqlite');
     writeLegacyHandoffs(legacy, [
-      { repo, decisions: JSON.stringify(['rotate ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'keep WAL on']) },
+      { repo, decisions: JSON.stringify([`rotate ${FAKE_GITHUB_PAT}`, 'keep WAL on']) },
     ]);
 
     const migrated = new Store(legacy);
