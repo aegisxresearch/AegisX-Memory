@@ -17,6 +17,17 @@ import { SETUP_AGENTS, describeProjectRulesResult, describeResult, describeRules
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
 import { startDashboard } from './dashboard.js';
 import { runSetupWizard } from './setup.js';
+import {
+  HOOK_INDEX_DEADLINE_MS,
+  POST_EDIT_DEADLINE_MS,
+  claudeSettingsPath,
+  describeHookInstall,
+  installClaudeHooks,
+  parseHookEvent,
+  positiveIntArg,
+  repoFromStdinJson,
+  runHook,
+} from './hooks.js';
 
 const program = new Command();
 
@@ -505,6 +516,79 @@ program
       }
     });
   });
+
+program
+  .command('hook')
+  .description('agent lifecycle hooks: memory loads and the save reminder fire without relying on model compliance')
+  .argument('<event>', 'session-start | session-end | post-edit')
+  .option('--json', 'machine-readable protocol output (Claude Code SessionStart/Stop/PostToolUse JSON)', false)
+  .option('--repo <path>', 'repo root (default: resolve from stdin JSON cwd, else process cwd)')
+  .option('--budget <n>', 'session-start token budget (a target; the floor can exceed it)', intArg, DEFAULT_TOKEN_BUDGET)
+  .option('--deadline <ms>', 'max time for the capped auto-index/post-edit scan (default: 10s session-start, 15s post-edit)', positiveIntArg('deadline'))
+  .option('--install', 'write the SessionStart + PostToolUse hooks into Claude Code settings.json (user scope, or --project for repo scope)', false)
+  .option('--project', 'with --install: target <repo>/.claude/settings.json instead of the user scope', false)
+  .action((event: string, opts: { json: boolean; repo?: string; budget: number; deadline?: number; install: boolean; project: boolean }) => {
+    run(async () => {
+      guardHookStdout();
+      const parsedEvent = parseHookEvent(event);
+      if (opts.install) {
+        if (parsedEvent !== 'session-start') {
+          throw new AegisxError('user', '--install installs the pair (SessionStart + PostToolUse) as a set; run it without an event or with session-start');
+        }
+        // claudeSettingsPath(project: boolean, …): pass the flag as-is — the
+        // earlier `!opts.project` here inverted scopes and wrote user files.
+        const file = claudeSettingsPath(opts.project === true, opts.repo);
+        const result = installClaudeHooks(file);
+        process.stdout.write(describeHookInstall(result) + '\n');
+        if (result.action !== 'error') {
+          process.stdout.write('\nRestart Claude Code (hooks are read at launch). SessionStart loads memory automatically; every Write/Edit re-indexes.\n');
+        }
+        return;
+      }
+      // Claude Code passes the event JSON on stdin; consume it without
+      // hanging when nothing is piped (raw CLI use, TTY or closed stdin).
+      const raw = process.stdin.isTTY === false ? await readStdinOnce() : null;
+      const repo = opts.repo ?? repoFromStdinJson(raw);
+      const outcome = runHook(parsedEvent, {
+        json: opts.json,
+        repo,
+        budget: opts.budget,
+        deadlineMs: opts.deadline ?? (parsedEvent === 'post-edit' ? POST_EDIT_DEADLINE_MS : HOOK_INDEX_DEADLINE_MS),
+      });
+      if (outcome.stdout !== '') process.stdout.write(outcome.stdout);
+      if (outcome.stderr !== '') process.stderr.write(outcome.stderr);
+      process.exitCode = outcome.exitCode;
+    });
+  });
+
+/** Read stdin to EOF as utf8 (Claude Code hook events arrive as one JSON
+ *  document). Resolves null when stdin is a TTY; never hangs on a pipe whose
+ *  writer already closed. */
+function readStdinOnce(): Promise<string | null> {
+  if (process.stdin.isTTY) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let buf = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk: string) => {
+      buf += chunk;
+    });
+    process.stdin.on('end', () => resolve(buf));
+    process.stdin.on('error', () => resolve(buf));
+  });
+}
+
+// Hook output is often piped (`… | head`); EPIPE arrives as an 'error' event
+// on stdout, not a throw — swallow it once so a closed pipe cannot crash the
+// agent that invoked the hook.
+let hookStdoutGuarded = false;
+function guardHookStdout(): void {
+  if (hookStdoutGuarded) return;
+  hookStdoutGuarded = true;
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') return;
+    throw err;
+  });
+}
 
 program
   .command('stats')

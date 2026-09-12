@@ -424,3 +424,30 @@ describe('recall coverage — a cut is stated, never implied', () => {
     expect(engine.renderMarkdown(result)).toContain('0 knowledge (some exist, none matched)');
   });
 });
+
+describe('index deadline (hook path)', () => {
+  it('happy: a generous deadline completes and records telemetry like a normal scan', () => {
+    writeRepoFile('src/a.ts', 'export const a = 1;\n');
+    const stats = engine.indexRepoWithDeadline(repoDir, Date.now() + 60_000);
+    expect(stats).not.toBeNull();
+    expect(stats?.filesTotal).toBe(1);
+    expect(engine.statsFor(repoDir).scans.total).toBe(1);
+  });
+
+  it('deadline in the past pauses honestly: null result, no telemetry, no partial lie', () => {
+    writeRepoFile('src/b.ts', 'export const b = 2;\n');
+    const stats = engine.indexRepoWithDeadline(repoDir, Date.now() - 1);
+    expect(stats).toBeNull();
+    // The pause must be invisible to observability: no scan was "run".
+    expect(engine.statsFor(repoDir).scans.total).toBe(0);
+    // ...and a later real scan sees the repo as fresh (nothing half-written).
+    const resumed = engine.indexRepo(repoDir);
+    expect(resumed.filesTotal).toBe(1);
+  });
+
+  it('unbounded indexRepo never returns null (type-level promise, checked at runtime too)', () => {
+    writeRepoFile('src/c.ts', 'export const c = 3;\n');
+    const stats = engine.indexRepo(repoDir);
+    expect(stats.filesTotal).toBe(1);
+  });
+});

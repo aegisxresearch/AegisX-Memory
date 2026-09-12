@@ -18,6 +18,9 @@ import { secureDbFile } from '../core/db-perms.js';
 
 export const MAX_FILE_BYTES = 512 * 1024;
 export const MAX_TOTAL_FILES = 50_000;
+/** Floor for a caller-supplied deadline: below this, timer jitter decides the
+ *  outcome, so a tinier budget would be nondeterminism, not a feature. */
+export const INDEX_DEADLINE_MIN_MS = 250;
 export const MAX_DEPTH = 64;
 
 const DEFAULT_SKIP_DIRS = new Set([
@@ -187,13 +190,23 @@ export class Indexer {
   /**
    * Incremental scan: hash every admissible file, re-extract only changed ones,
    * tombstone deleted ones. Deterministic — same repo state, same result.
+   *
+   * `deadlineAtMs` (optional, epoch ms) makes the scan *deadline-aware* for
+   * hook callers: the scan is synchronous by design, so the deadline is
+   * cooperative — checked between files during hashing and between files
+   * inside the extract transaction. When it fires the scan returns `null`
+   * after committing whatever files were already extracted, so nothing is
+   * lost and the next scan resumes from real stored hashes. A `null` return
+   * means "did not finish in budget", never "failed".
    */
-  scan(repoAbsPath: string, repo: string, onWarn?: (msg: string) => void): ScanStats {
+  scan(repoAbsPath: string, repo: string, onWarn?: (msg: string) => void, deadlineAtMs?: number): ScanStats | null {
     const started = Date.now();
     const root = path.resolve(repoAbsPath);
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
       throw new AegisxError('user', `repo path does not exist or is not a directory: ${root}`);
     }
+    const warn = onWarn ?? (() => undefined);
+    const outOfTime = (): boolean => deadlineAtMs !== undefined && Date.now() > deadlineAtMs;
 
     const previous = this.loadPreviousHashes(repo);
     const collected = this.collectFileHashes(root, onWarn);
@@ -203,6 +216,13 @@ export class Indexer {
       if (previous.get(rel) !== hash) {
         changed.push(rel);
       }
+    }
+
+    // Deadline before the first write: pause with zero side effects, so a
+    // hook-triggered first run cannot leave a half-indexed repo behind.
+    if (outOfTime()) {
+      warn('indexing paused: time budget spent before the first write');
+      return null;
     }
 
     const extract = this.db.transaction((paths: string[]) => {
@@ -215,7 +235,16 @@ export class Indexer {
          ON CONFLICT(repo, path) DO UPDATE SET hash = excluded.hash,
            size = excluded.size, mtime_ms = excluded.mtime_ms, deleted = 0`,
       );
+      let partial = false;
       for (const rel of paths) {
+        // Cooperative deadline between files: the transaction commits the
+        // files processed so far (atomic prefix), and `partial` tells the
+        // caller the scan did not finish. Stored hashes make the next scan
+        // resume from exactly this point.
+        if (outOfTime()) {
+          partial = true;
+          break;
+        }
         delSyms.run(repo, rel);
         const content = fs.readFileSync(path.join(root, rel), 'utf8');
         for (const sym of extractSymbols(rel, content)) {
@@ -225,6 +254,7 @@ export class Indexer {
         const stat = fs.statSync(path.join(root, rel));
         upsertFile.run(rel, repo, nextHashes.get(rel) ?? '', stat.size, Math.round(stat.mtimeMs));
       }
+      return partial;
     });
 
     const deletedCount = [...previous.keys()].filter((k) => !nextHashes.has(k)).length;
@@ -236,9 +266,13 @@ export class Indexer {
           this.prepared('DELETE FROM symbols WHERE repo = ? AND file_path = ?').run(repo, rel);
         }
       }
-      extract(changed);
+      return extract(changed);
     });
-    commit();
+    const partial = commit();
+    if (partial === true) {
+      warn('indexing paused: time budget spent mid-scan; run `index` again to resume');
+      return null;
+    }
 
     const filesTotal = nextHashes.size;
     const symbolsTotal = (

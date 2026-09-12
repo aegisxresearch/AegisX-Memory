@@ -327,6 +327,24 @@ Safety properties: marker-wrapped (nothing outside the block is modified), backe
 
 After installing rules, **restart the agent**. From then on you just work — the memory loop runs itself.
 
+### 6.1 Hooks — the layer that does not ask (Claude Code)
+
+Rules files still rely on the model *choosing* to obey. Hooks remove that dependency for Claude Code: the agent itself fires them at fixed lifecycle points.
+
+```bash
+aegisxmemory hook session-start --install            # user scope (~/.claude/settings.json)
+aegisxmemory hook session-start --install --project  # repo scope (<repo>/.claude/settings.json)
+```
+
+Two entries are written (marker-wrapped, backed up, idempotent — user hooks untouched):
+
+| Hook | Fires | What it does |
+|---|---|---|
+| `SessionStart` (matcher `startup\|resume`) | session begins/resumes | runs `aegisxmemory hook session-start --json`: indexes a never-indexed repo under a 10 s cooperative budget, then injects the budgeted memory block via `hookSpecificOutput.additionalContext` — before the model reads a single file |
+| `PostToolUse` (matcher `Write\|Edit`) | after each file write/edit | runs `aegisxmemory hook post-edit`: one incremental scan, so the index stays fresh without a watcher |
+
+`aegisxmemory hook session-end --json` prints the Claude Code Stop-hook payload (`{"decision":"block","reason":…}`) that tells the agent to save the handoff before stopping — install it by hand if you want that enforced too. Every hook degrades instead of failing: a missing memory home, a denied repo, or a spent deadline becomes a stderr note and exit 0, never an agent-visible error. Restart Claude Code after installing (hooks are read at launch).
+
 ## 7. The daily loop
 
 Everything repo-aware uses the **current working directory** — `cd` into the project first. Memory is namespaced per path: project A and project B never bleed into each other.

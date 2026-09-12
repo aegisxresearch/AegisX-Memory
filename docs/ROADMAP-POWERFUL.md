@@ -58,10 +58,10 @@ Blok aturan bekerja **kalau model patuh**. Hook bekerja **kalau agent memanggiln
 
 | # | Item | Kenapa | Usaha | Bukti selesai |
 |---|---|---|---|---|
-| 2.1 | **`aegisxmemory hook session-start` / `hook session-end`** — mencetak JSON yang cocok untuk hook Claude Code / Hermes | recall otomatis di awal, pengingat handoff di akhir | M | tes: JSON valid + isi blok memori |
-| 2.2 | **Pasang hook dari wizard** (dengan izin eksplisit, backup) | supaya otomatis benar-benar otomatis | M | tes: hook masuk config, idempoten |
-| 2.3 | **Auto-index saat recall menemukan repo belum terindeks** (`--auto-index`, batas waktu, dilaporkan) | pengguna baru tidak perlu tahu `index` | M | tes: repo kosong → terindeks + catatan di output |
-| 2.4 | **`hook post-edit`** → indeks tambahan sekali jalan | index tetap segar tanpa daemon `watch` | S | tes: berkas berubah → simbol muncul |
+| ~~2.1~~ | ✅ **`aegisxmemory hook session-start` / `hook session-end`** — JSON Claude Code asli: SessionStart → `hookSpecificOutput.additionalContext`, session-end → Stop payload `{decision:block, reason}` | recall otomatis di awal, pengingat handoff di akhir — tanpa kepatuhan model | M | 22 tes baru di `test/hooks.test.ts` + bukti live di wire |
+| ~~2.2~~ | ✅ **Pasang hook: `hook session-start --install [--project]`** + tawaran wizard untuk target claude (dengan backup, idempoten, marker) | supaya otomatis benar-benar otomatis | M | tes installer (created/merged/unchanged/error) + 3 tes wizard |
+| ~~2.3~~ | ✅ **Auto-index berbatas waktu di session-start** — `Indexer.scan` menerima deadline kooperatif (diperiksa antar file, commit atomik awalan, resume dari hash tersimpan); `indexRepoWithDeadline` di Engine | pengguna baru tidak perlu tahu `index`; jujur saat anggaran habis (`null` = "belum selesai", bukan gagal) | M | 3 tes deadline di `test/engine.test.ts` |
+| ~~2.4~~ | ✅ **`hook post-edit`** → indeks inkremental sekali jalan | index tetap segar tanpa daemon `watch` | S | tes: berkas berubah → simbol muncul |
 
 ---
 

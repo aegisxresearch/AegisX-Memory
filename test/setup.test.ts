@@ -46,6 +46,45 @@ describe('setup wizard — non-interactive (piped) path', () => {
   });
 });
 
+describe('setup wizard — Claude Code hooks offer', () => {
+  it('happy: choosing claude with rules on installs the hook pair into the project settings', async () => {
+    const projectDir = path.join(workspace, 'proj');
+    fs.mkdirSync(projectDir);
+    // Prompt seam: the same choice a user typing "2" then Enter makes.
+    await runSetupWizard(undefined, {
+      projectDir,
+      prompt: () => ({ agents: ['claude'], rules: true }),
+    });
+    const settings = path.join(projectDir, '.claude', 'settings.json');
+    expect(fs.existsSync(settings)).toBe(true);
+    const parsed = JSON.parse(fs.readFileSync(settings, 'utf8')) as {
+      hooks: Record<string, unknown[]>;
+    };
+    expect(parsed.hooks['SessionStart']).toHaveLength(1);
+    expect(parsed.hooks['PostToolUse']).toHaveLength(1);
+  });
+
+  it('negative: hermes-only setup never touches Claude Code settings', async () => {
+    const projectDir = path.join(workspace, 'proj2');
+    fs.mkdirSync(projectDir);
+    await runSetupWizard(undefined, {
+      projectDir,
+      prompt: () => ({ agents: ['hermes'], rules: true }),
+    });
+    expect(fs.existsSync(path.join(projectDir, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  it('negative: rules off means no hook offer either (hooks imply auto-memory)', async () => {
+    const projectDir = path.join(workspace, 'proj3');
+    fs.mkdirSync(projectDir);
+    await runSetupWizard(undefined, {
+      projectDir,
+      prompt: () => ({ agents: ['claude'], rules: false }),
+    });
+    expect(fs.existsSync(path.join(projectDir, '.claude', 'settings.json'))).toBe(false);
+  });
+});
+
 describe('setup wizard — project rules (AGENTS.md)', () => {
   it('plants the memory contract in the project directory the CLI passes', async () => {
     const project = path.join(workspace, 'proj');

@@ -327,6 +327,24 @@ Sifat keamanannya: berpembatas penanda (apa pun di luar blok tidak diubah), di-b
 
 Setelah memasang rules, **restart agent**. Mulai saat itu Anda tinggal bekerja — loop memorinya berjalan sendiri.
 
+### 6.1 Hook — lapisan yang tidak minta (Claude Code)
+
+File rules tetap bergantung pada model yang *mau* patuh. Hook menghapus ketergantungan itu untuk Claude Code: agentnya sendiri yang menjalankannya di titik siklus hidup yang tetap.
+
+```bash
+aegisxmemory hook session-start --install            # lingkup user (~/.claude/settings.json)
+aegisxmemory hook session-start --install --project  # lingkup repo (<repo>/.claude/settings.json)
+```
+
+Dua entri ditulis (berpembatas penanda, di-backup, idempotent — hook milik pengguna tidak disentuh):
+
+| Hook | Jalan kapan | Yang dilakukan |
+|---|---|---|
+| `SessionStart` (matcher `startup\|resume`) | sesi mulai/lanjut | menjalankan `aegisxmemory hook session-start --json`: mengindeks repo yang belum pernah diindeks dengan anggaran waktu kooperatif 10 detik, lalu menyuntikkan blok memori lewat `hookSpecificOutput.additionalContext` — sebelum model membaca satu file pun |
+| `PostToolUse` (matcher `Write\|Edit`) | setiap tulis/edit file | menjalankan `aegisxmemory hook post-edit`: satu pemindaian inkremental, indeks tetap segar tanpa watcher |
+
+`aegisxmemory hook session-end --json` mencetak payload Stop-hook Claude Code (`{"decision":"block","reason":…}`) yang menyuruh agent menyimpan handoff sebelum berhenti — pasang manual kalau itu pun mau dipaksa. Setiap hook *mengalah*, bukan gagal: memory home yang belum ada, repo yang ditolak allowlist, atau anggaran waktu habis menjadi catatan di stderr dan exit 0 — bukan error yang terlihat agent. Restart Claude Code setelah memasang (hook dibaca saat launch).
+
 ## 7. Loop harian
 
 Semua perintah yang berbasis repo memakai **direktori kerja saat ini** — `cd` dulu ke foldernya. Memori di-namespace per path: project A dan project B tidak pernah bercampur.

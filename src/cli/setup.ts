@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { SETUP_AGENTS, describeProjectRulesResult, describeResult, describeRulesResult, installForAgent, installProjectRules, installRulesForAgent, type SetupAgent } from './auto-setup.js';
+import { claudeSettingsPath, describeHookInstall, installClaudeHooks } from './hooks.js';
 import { defaultServerConfig } from './mcp-config.js';
 import type { Engine } from '../core/engine.js';
 
@@ -34,6 +35,12 @@ export interface SetupOptions {
    * callers so a test can never modify a real repository.
    */
   projectDir?: string;
+  /**
+   * Injectable prompt seam (tests): when set, the wizard takes its choice
+   * from here instead of asking readline — the interactive path stays
+   * untouched for real users, and fakes need no timing games with streams.
+   */
+  prompt?: () => Promise<SetupChoice> | SetupChoice;
 }
 
 const AGENT_LABELS: ReadonlyArray<{ key: string; agent: SetupAgent | 'all'; hint: string }> = [
@@ -107,15 +114,15 @@ async function askUntil(rl: readline.Interface, question: string, resolve: (a: s
 
 /** Run the wizard. `engine` is optional (used to show a final verification line). */
 export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}): Promise<void> {
-  const interactive = input.isTTY === true;
+  const instream = input;
   let choice: SetupChoice;
 
-  if (!interactive) {
-    // Non-TTY: never hang. Apply the recommended defaults.
-    choice = { agents: ['hermes'], rules: true };
-    say('(bukan sesi interaktif — memakai default: hermes + aturan otomatis)\n');
-  } else {
-    const rl = readline.createInterface({ input, output });
+  if (options.prompt !== undefined) {
+    // Test/programmatic seam: no readline, no stream timing.
+    choice = await options.prompt();
+    say('');
+  } else if (instream.isTTY === true) {
+    const rl = readline.createInterface({ input: instream, output });
     try {
       printMenu();
       const agentAnswer = await askUntil(rl, 'Pilih 1-8 [Enter = 1, Hermes]: ', resolveAgents);
@@ -131,6 +138,10 @@ export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}
     } finally {
       rl.close();
     }
+  } else {
+    // Non-TTY: never hang. Apply the recommended defaults.
+    choice = { agents: ['hermes'], rules: true };
+    say('(bukan sesi interaktif — memakai default: hermes + aturan otomatis)\n');
   }
 
   say('\n');
@@ -149,6 +160,15 @@ export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}
   if (choice.rules && projectDir !== undefined && path.resolve(projectDir) !== path.resolve(os.homedir())) {
     say(describeProjectRulesResult(installProjectRules(projectDir)) + '\n');
     say('   (AGENTS.md ikut dibaca agent lain \u2014 Codex, Copilot, Gemini CLI, Zed \u2014 tanpa setup tambahan.)\n');
+  }
+
+  // Claude Code hooks are the one automation layer that does not depend on
+  // the model reading any rules file: the agent itself fires them. Offered
+  // whenever Claude is among the chosen targets and rules are on; project
+  // scope only — a wizard should never edit the user's global settings.
+  if (choice.rules && choice.agents.includes('claude') && options.projectDir !== undefined && path.resolve(options.projectDir) !== path.resolve(os.homedir())) {
+    say(describeHookInstall(installClaudeHooks(claudeSettingsPath(true, options.projectDir))) + '\n');
+    say('   (SessionStart memuat ingatan otomatis; tiap Write/Edit di-indeks ulang — tanpa bergantung kepatuhan model.)\n');
   }
 
   const names = choice.agents.join(', ');

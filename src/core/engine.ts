@@ -72,10 +72,34 @@ export class Engine {
     this.store.close();
   }
 
+  /** Unbounded scan (CLI `index`). Never returns null: without a deadline the
+   *  indexer cannot pause, and the type keeps that promise. */
   indexRepo(repoAbsPath: string, onWarn?: (msg: string) => void): ScanStats {
     const repo = normalizeRepoPath(repoAbsPath);
     this.guardRepo(repo);
     const stats = this.indexer.scan(repoAbsPath, repo, onWarn);
+    if (stats === null) {
+      // Exhaustiveness only: a null scan requires a deadline.
+      throw new AegisxError('internal', 'index scan paused without a deadline — impossible state');
+    }
+    this.afterScan(repo, stats);
+    return stats;
+  }
+
+  /** Deadline-aware scan for hooks (roadmap 2.3): pauses cooperatively at the
+   *  deadline and returns null meaning "did not finish in budget" — partial
+   *  work is committed and the next scan resumes from stored hashes. */
+  indexRepoWithDeadline(repoAbsPath: string, deadlineAtMs: number, onWarn?: (msg: string) => void): ScanStats | null {
+    const repo = normalizeRepoPath(repoAbsPath);
+    this.guardRepo(repo);
+    const stats = this.indexer.scan(repoAbsPath, repo, onWarn, deadlineAtMs);
+    if (stats === null) return null;
+    this.afterScan(repo, stats);
+    return stats;
+  }
+
+  /** Telemetry + freshness bookkeeping shared by every *completed* scan. */
+  private afterScan(repo: string, stats: ScanStats): void {
     try {
       // Retention (DoS): prune stale telemetry opportunistically on every scan;
       // failures must never break indexing.
@@ -89,7 +113,6 @@ export class Engine {
     } catch {
       // telemetry must never break indexing
     }
-    return stats;
   }
 
   /** Save a stable fact (secret-checked; repo must be allowlisted when configured). */
