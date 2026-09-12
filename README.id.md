@@ -271,7 +271,7 @@ Blok itu menginstruksikan agent untuk:
 
 1. **recall di awal sesi** — sebelum apa pun, panggil `aegisxmemory_recall` untuk repo saat ini;
 2. **langsung remember fakta stabil** — perintah test, stack, port, konvensi;
-3. **mencatat keputusan/gotcha** — lewat handoff `save`, bukan hanya di obrolan;
+3. **mencatat keputusan/gotcha** — di daftar `decisions` pada handoff `save`, dan setiap entri tersimpan sebagai knowledge yang bisa dicari, bukan hanya di obrolan;
 4. **save handoff di akhir sesi** — supaya sesi berikutnya lanjut hangat;
 5. **tidak pernah mencoba menyimpan secret** — engine menolaknya.
 
@@ -355,7 +355,7 @@ Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membuka
 | `aegisxmemory remember <key> <value>` | pin fakta stabil |
 | `aegisxmemory forget <key>` | hapus fakta (beserta nilai-nilai lamanya) |
 | `aegisxmemory history [key]` | nilai lama sebuah fakta (linimasa nilai yang sudah digantikan) |
-| `aegisxmemory save --json <file\|->` | simpan handoff sesi (file JSON atau stdin) |
+| `aegisxmemory save --json <file\|->` | simpan handoff sesi (file JSON atau stdin); setiap keputusan juga tersimpan sebagai knowledge yang bisa dicari |
 | `aegisxmemory resume` | cetak handoff terakhir + memori repo ini |
 | `aegisxmemory stats [path] [--json]` | observability: file/simbol, scan, recall, hit rate, token hemat |
 | `aegisxmemory watch [path] [--poll] [--debounce n]` | auto-index event-driven (chokidar, fallback polling) |

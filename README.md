@@ -271,7 +271,7 @@ The block instructs the agent to:
 
 1. **recall at session start** — before anything else, call `aegisxmemory_recall` for the current repo;
 2. **remember stable facts immediately** — test command, stack, ports, conventions;
-3. **record decisions/gotchas** — via `save` handoffs, not chat-only;
+3. **record decisions/gotchas** — in the `save` handoff's `decisions` list, where each entry becomes a searchable knowledge entry, not chat-only;
 4. **save the handoff at session end** — so the next session resumes warm;
 5. **never try to store secrets** — the engine refuses them.
 
@@ -355,7 +355,7 @@ The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose i
 | `aegisxmemory remember <key> <value>` | pin a stable fact |
 | `aegisxmemory forget <key>` | delete a fact (and its superseded values) |
 | `aegisxmemory history [key]` | what a pinned fact used to be (timeline of superseded values) |
-| `aegisxmemory save --json <file\|->` | persist a session handoff (JSON file or stdin) |
+| `aegisxmemory save --json <file\|->` | persist a session handoff (JSON file or stdin); each decision is also stored as searchable knowledge |
 | `aegisxmemory resume` | print last handoff + memory for this repo |
 | `aegisxmemory stats [path] [--json]` | observability: files/symbols, scans, recalls, hit rate, tokens saved |
 | `aegisxmemory watch [path] [--poll] [--debounce n]` | event-driven auto-index (chokidar, polling fallback) |
