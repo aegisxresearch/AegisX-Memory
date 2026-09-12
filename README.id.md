@@ -92,7 +92,7 @@ Tiga store di bawah satu database SQLite (`~/.aegisx/memory.sqlite`, WAL + FTS5)
 
 **Invalidasi berbasis hash, bukan timestamp.** Pengetahuan kode dikunci ke hash SHA-256 isi file. Begitu file berubah, memorinya yang basi langsung hilang. Nol jawaban basi, nol heuristik.
 
-**Recall beranggaran.** Satu recall merangkai, dalam batas token yang ketat (default 2.000): fakta milik repo → knowledge berperingkat FTS → simbol (diperingkat query) → handoff terakhir → ringkasan struktur. Kalau kelebihan, item prioritas terendah yang dibuang lebih dulu — tidak pernah di tengah fakta.
+**Recall beranggaran.** Satu recall merangkai, dalam batas token yang ketat (default 2.000): fakta repo ini → keputusan/gotcha repo ini → simbol → handoff terakhir → ringkasan struktur. Beri query dan lapisan knowledge serta simbol berubah dari ter-anchor menjadi berperingkat FTS; tanpa query, tidak ada memori repo lain yang bisa ikut tertarik. Kalau kelebihan, item prioritas terendah yang dibuang lebih dulu — tidak pernah di tengah fakta.
 
 ## 3. Instalasi
 
@@ -643,7 +643,7 @@ CLI / MCP ──► Engine ──► FactStore ─┐
 - **Indexer** (`src/indexer/`) — walk repositori berbasis hash-diff; mengekstrak simbol/TODO dengan extractor per bahasa. Deklarasi yang dikenali: JS/TS, Python, Ruby (`def`), Go (`func`, `type`), Rust (`fn`, `mod`, `struct`, `impl`, `trait`), Java, C#, Kotlin (`class`, `interface`, `enum`, `record`, `object`, `namespace`, `union`) dan fungsi bergaya C/C++ (`int main(`, `std::string name(`) — hanya deklarasi di kolom 0, jadi anggota yang di-indent tidak masuk indeks.
 - **Secrets** (`src/core/secrets.ts`) — detector secret tunggal yang dipakai semua jalur tulis.
 
-Komposisi recall, dalam batas token yang ketat: fakta milik repo → knowledge berperingkat FTS → simbol (diperingkat query, daftar teratas deterministik bila tanpa query) → handoff terakhir → ringkasan struktur. Kelebihan membuang item prioritas terendah lebih dulu — tidak pernah di tengah fakta.
+Komposisi recall, dalam batas token yang ketat: fakta milik repo → knowledge milik repo (berperingkat FTS dan dibatasi repo bila recall membawa query) → simbol (diperingkat query, daftar teratas deterministik bila tanpa query) → handoff terakhir → ringkasan struktur. Recall tanpa query ter-anchor sepenuhnya dan tidak pernah mencari fakta repo lain. Kelebihan membuang item prioritas terendah lebih dulu — tidak pernah di tengah fakta.
 
 ## 20. Roadmap
 
