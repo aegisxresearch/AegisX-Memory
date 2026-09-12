@@ -17,6 +17,7 @@ import { SETUP_AGENTS, describeProjectRulesResult, describeResult, describeRules
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
 import { startDashboard } from './dashboard.js';
 import { runSetupWizard } from './setup.js';
+import { assertNotHome, describeUninstall, runUninstall, uninstallMirrorTargets } from './uninstall.js';
 import {
   HOOK_INDEX_DEADLINE_MS,
   POST_EDIT_DEADLINE_MS,
@@ -28,6 +29,8 @@ import {
   repoFromStdinJson,
   runHook,
 } from './hooks.js';
+import { configPathFor, rulesPathFor } from './auto-setup.js';
+import os from 'node:os';
 
 const program = new Command();
 
@@ -767,16 +770,79 @@ program
 program
   .command('setup')
   .description('interactive onboarding: connect your agent + enable auto-memory in one guided flow (recommended for first-time users)')
-  .action(() => {
+  .option('--yes', 'non-interactive: apply the answers below without asking (for scripts and dotfiles)', false)
+  .option('--agent <name>', 'with --yes: comma-separated agents to wire (hermes, claude, cursor, gemini, codex, windsurf, vscode, all)', 'hermes')
+  .option('--no-rules', 'with --yes: skip the auto-memory behavior rules')
+  .action((opts: { yes: boolean; agent: string; rules: boolean }) => {
     run(async () => {
       const engine = openEngine();
       try {
+        if (opts.yes) {
+          const names = opts.agent.split(',').map((s) => s.trim()).filter((s) => s !== '');
+          const agents: SetupAgent[] = [];
+          for (const name of names) {
+            if (name === 'all') agents.push(...SETUP_AGENTS);
+            else if ((SETUP_AGENTS as readonly string[]).includes(name)) agents.push(name as SetupAgent);
+            else throw new AegisxError('user', `unknown agent "${name}"; expected one of: ${SETUP_AGENTS.join(', ')}, all`);
+          }
+          if (agents.length === 0) agents.push('hermes');
+          // An explicit --yes is an answer, not an absence of one: the wizard
+          // must not ask anything, and the TTY check is irrelevant here.
+          await runSetupWizard(engine, {
+            projectDir: process.cwd(),
+            yes: { agents, rules: opts.rules },
+          });
+          return;
+        }
         // The wizard also plants the contract in this repo's AGENTS.md, so agents
         // it has no writer for still get automatic memory.
         await runSetupWizard(engine, { projectDir: process.cwd() });
       } finally {
         engine.close();
       }
+    });
+  });
+
+program
+  .command('uninstall')
+  .description('remove the aegisx-memory wiring (MCP registrations, rules, hooks) — your memory data in ~/.aegisx is never touched')
+  .option('--agent <name>', 'comma-separated agents to unwire (hermes, claude, cursor, gemini, codex, windsurf, vscode, all)', 'all')
+  .option('--project', 'also strip the managed block from <repo>/AGENTS.md', false)
+  .option('--hooks', 'also remove the Claude Code hook pair', false)
+  .option('--dry-run', 'print what would be removed without changing anything', false)
+  .action((opts: { agent: string; project: boolean; hooks: boolean; dryRun: boolean }) => {
+    run(() => {
+      const names = opts.agent.split(',').map((s) => s.trim()).filter((s) => s !== '');
+      const agents: SetupAgent[] = [];
+      for (const name of names) {
+        if (name === 'all') agents.push(...SETUP_AGENTS);
+        else if ((SETUP_AGENTS as readonly string[]).includes(name)) agents.push(name as SetupAgent);
+        else throw new AegisxError('user', `unknown agent "${name}"; expected one of: ${SETUP_AGENTS.join(', ')}, all`);
+      }
+      if (opts.project) assertNotHome(process.cwd());
+      const scope = { agents, hooks: opts.hooks, project: opts.project, projectDir: process.cwd() };
+      if (opts.dryRun) {
+        // Print from the same predicate a real run uses, so the preview shows
+        // the mirrored repo AGENTS.md / project hooks too — not just the
+        // per-agent files.
+        const mirror = uninstallMirrorTargets(agents);
+        const inRepo = path.resolve(process.cwd()) !== path.resolve(os.homedir());
+        process.stdout.write('dry-run — nothing was removed. Would touch:\n');
+        for (const agent of agents) {
+          process.stdout.write(`  mcp: ${configPathFor(agent)}\n`);
+          const rules = rulesPathFor(agent);
+          if (rules !== null) process.stdout.write(`  rules: ${rules}\n`);
+        }
+        if (opts.hooks) process.stdout.write(`  hooks: ${claudeSettingsPath(false)}\n`);
+        if (inRepo && (opts.project || mirror.project)) process.stdout.write(`  project: ${path.join(process.cwd(), 'AGENTS.md')}\n`);
+        if (opts.hooks || (inRepo && mirror.hooks)) process.stdout.write(`  hooks (project): ${claudeSettingsPath(true, process.cwd())}\n`);
+        if (!inRepo && (mirror.project || mirror.hooks)) process.stdout.write('  (home directory — the repo-level files are skipped)\n');
+        return;
+      }
+      for (const r of runUninstall(scope)) {
+        process.stdout.write(describeUninstall(r) + '\n');
+      }
+      process.stdout.write('\nRestart the affected agents. Memory data (facts, knowledge, handoffs) in ~/.aegisx was NOT touched —\ndelete it manually with `rm -rf ~/.aegisx` if that is what you want.\n');
     });
   });
 

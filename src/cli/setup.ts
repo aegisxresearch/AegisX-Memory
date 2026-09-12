@@ -36,6 +36,14 @@ export interface SetupOptions {
    */
   projectDir?: string;
   /**
+   * Non-interactive mode (`setup --yes`): skip every question and apply the
+   * given choices. Agents default to hermes when omitted; rules default to
+   * on. Distinct from the non-TTY fallback — this is an *explicit* answer,
+   * so it works in scripts and dotfiles setups where stdin is a real TTY but
+   * asking would still be wrong.
+   */
+  yes?: { agents?: SetupAgent[]; rules?: boolean };
+  /**
    * Injectable prompt seam (tests): when set, the wizard takes its choice
    * from here instead of asking readline — the interactive path stays
    * untouched for real users, and fakes need no timing games with streams.
@@ -117,7 +125,12 @@ export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}
   const instream = input;
   let choice: SetupChoice;
 
-  if (options.prompt !== undefined) {
+  if (options.yes !== undefined) {
+    // Explicit non-interactive mode: the answers were given on the command
+    // line, so none are asked — not even the TTY check matters.
+    choice = { agents: options.yes.agents ?? ['hermes'], rules: options.yes.rules ?? true };
+    say(`(mode non-interaktif --yes: ${choice.agents.join(', ')} + aturan ${choice.rules ? 'aktif' : 'mati'})\n`);
+  } else if (options.prompt !== undefined) {
     // Test/programmatic seam: no readline, no stream timing.
     choice = await options.prompt();
     say('');

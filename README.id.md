@@ -756,13 +756,30 @@ Skip itu memang disengaja: path yang di-`.gitignore`, dotfile, `node_modules`/di
 
 ## 17. Uninstall
 
+Lepaskan dulu wiring dari agent Anda — satu perintah, dengan backup untuk setiap file yang disentuh:
+
+```bash
+cd project-anda
+aegisxmemory uninstall --agent all
+```
+
+Perintah ini mencabut registrasi MCP, blok aturan perilaku, dan (untuk Claude Code) pasangan hook project dari semua config agent yang dikenal (Hermes, Claude, Cursor, Gemini CLI, Codex, Windsurf, VS Code). File config yang dibuat oleh installer dihapus seluruhnya; tulisan Anda sendiri di file lain tetap utuh. **Data memori Anda di `~/.aegisx` tidak pernah disentuh** — itu arsip Anda, dan perintah ini mengatakannya saat selesai.
+
+Lihat dulu apa yang akan dicabut, tanpa mengubah apa pun:
+
+```bash
+aegisxmemory uninstall --agent all --dry-run
+```
+
+Setelah itu barulah hapus datanya, hanya jika memang mau:
+
 ```bash
 rm -rf ~/.aegisx        # memori + telemetri (semua data)
 rm -rf ~/.aegisx-app    # hanya kalau terpasang lewat install.sh
 rm -f ~/.local/bin/aegisxmemory
 ```
 
-Tidak ada yang pernah ditulis di luar direktori-direktori itu (plus entri config agent, yang bisa Anda hapus manual).
+Setiap file yang pernah ditulis installer punya backup di sebelahnya (`*.aegisx-bak`) — backup itu tetap ada setelah uninstall, jadi Anda bisa membandingkan apa yang berubah.
 
 ## 18. Pengembangan
 

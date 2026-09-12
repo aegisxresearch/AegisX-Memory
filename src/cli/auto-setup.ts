@@ -302,8 +302,8 @@ export interface RulesResult {
   backupPath: string | null;
 }
 
-const RULES_BEGIN = '<!-- aegisx-memory:auto-rules BEGIN -->';
-const RULES_END = '<!-- aegisx-memory:auto-rules END -->';
+export const RULES_BEGIN = '<!-- aegisx-memory:auto-rules BEGIN -->';
+export const RULES_END = '<!-- aegisx-memory:auto-rules END -->';
 
 /**
  * The standing-behavior block — the contract that makes memory automatic
@@ -403,8 +403,12 @@ export function rulesPathFor(agent: SetupAgent): string | null {
       const home = process.env['HERMES_HOME'];
       return home !== undefined && home !== '' ? path.join(home, 'SOUL.md') : path.join(os.homedir(), '.hermes', 'SOUL.md');
     }
-    case 'claude':
-      return expand(process.env['CLAUDE_CONFIG_DIR'] ?? path.join(os.homedir(), '.claude', 'CLAUDE.md'));
+    case 'claude': {
+      // CLAUDE_CONFIG_DIR is a directory (Claude Code's config home) — the
+      // rules file lives inside it, not at its path.
+      const dir = process.env['CLAUDE_CONFIG_DIR'];
+      return expand(dir !== undefined && dir !== '' ? path.join(dir, 'CLAUDE.md') : path.join(os.homedir(), '.claude', 'CLAUDE.md'));
+    }
     case 'cursor':
       return path.join(os.homedir(), '.cursor', 'rules', 'aegisx-memory.mdc');
     case 'gemini':

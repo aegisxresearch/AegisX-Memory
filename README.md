@@ -756,13 +756,30 @@ Skips are intentional: `.gitignore`d paths, dotfiles, `node_modules`/junk dirs, 
 
 ## 17. Uninstalling
 
+First unwire your agents — one command, with a backup of every file it touches:
+
+```bash
+cd your-project
+aegisxmemory uninstall --agent all
+```
+
+This removes the MCP registration, the behavior-rules block and (for Claude Code) the project hook pair from every known agent config (Hermes, Claude, Cursor, Gemini CLI, Codex, Windsurf, VS Code). A config file the installer created is deleted outright; anything you wrote yourself keeps its other content. **Your memory data in `~/.aegisx` is never touched** — it is your archive, and the command says so when it finishes.
+
+See exactly what would be removed before running it:
+
+```bash
+aegisxmemory uninstall --agent all --dry-run
+```
+
+Then remove the data itself, only if you want it gone:
+
 ```bash
 rm -rf ~/.aegisx        # memory + telemetry (all data)
 rm -rf ~/.aegisx-app    # only if installed via install.sh
 rm -f ~/.local/bin/aegisxmemory
 ```
 
-Nothing else was ever written outside those directories (plus the agent config entry, which you can delete by hand).
+Every file the installer ever wrote lives next to its backup (`*.aegisx-bak`) — those backups stay after uninstalling so you can diff what changed.
 
 ## 18. Development
 
