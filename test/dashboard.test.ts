@@ -92,11 +92,13 @@ describe('dashboard — local web view', () => {
     const fresh = parsed.facts.find((f) => f.key === 'project.demo.stack');
     expect(fresh?.previousValue).toBeUndefined();
 
-    // The panel renders that data client-side; the served template must carry the
-    // changed-state markup without embedding any stored value.
+    // The panel renders that data client-side: the page shell carries the section,
+    // the script carries the changed-state markup, and neither embeds a stored value.
     const page = await get(stopper.url, '/');
     expect(page.body).toContain('Pinned facts');
-    expect(page.body).toContain('changed since they were first pinned');
+    expect(page.body).not.toContain('3000');
+    const js = await get(stopper.url, '/app.js');
+    expect(js.body).toContain('changed since they were first pinned');
   });
 
   it('negative: unknown paths 404', async () => {
@@ -147,5 +149,86 @@ describe('dashboard — local web view', () => {
     // page includes the graph section shell
     const page = await get(stopper.url, '/');
     expect(page.body).toContain('Knowledge graph');
+  });
+
+  it('assets: the stylesheet and script are served from this origin with correct types', async () => {
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const css = await get(stopper.url, '/app.css');
+    expect(css.status).toBe(200);
+    expect(css.type).toContain('text/css');
+    expect(css.body.length).toBeGreaterThan(1000);
+
+    const js = await get(stopper.url, '/app.js');
+    expect(js.status).toBe(200);
+    expect(js.type).toContain('text/javascript');
+    expect(js.body.length).toBeGreaterThan(1000);
+  });
+
+  it('theme: one token layer drives light, dark and auto, resolved before first paint', async () => {
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const page = await get(stopper.url, '/');
+    const css = await get(stopper.url, '/app.css');
+    const js = await get(stopper.url, '/app.js');
+
+    // the head script resolves the palette so the page never flashes the wrong one
+    expect(page.body).toContain('data-theme');
+    expect(page.body).toContain('id="theme"');
+    // semantic tokens, with the dark palette as the only override block
+    expect(css.body).toContain(':root[data-theme="dark"]');
+    expect(css.body).toContain('--bg:');
+    expect(css.body).toContain('--surface:');
+    expect(css.body).toContain('--fg-muted:');
+    expect(css.body).toContain('prefers-reduced-motion');
+    // the script follows the system preference and cycles auto → light → dark
+    expect(js.body).toContain("'auto', 'light', 'dark'");
+    expect(js.body).toContain('prefers-color-scheme: dark');
+  });
+
+  it('a11y: landmarks, a live status region, keyboard-reachable bars and a graph fallback', async () => {
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const page = await get(stopper.url, '/');
+    const js = await get(stopper.url, '/app.js');
+
+    expect(page.body).toContain('<main id="main"');
+    expect(page.body).toContain('<header');
+    expect(page.body).toContain('class="skip"');
+    expect(page.body).toContain('aria-live="polite"');
+    expect(page.body).toContain('aria-labelledby');
+    expect(page.body).toContain('role="tooltip"');
+    // chart bars are focusable and named; the graph has a table view for keyboards
+    expect(js.body).toContain("tabindex: '0'");
+    expect(js.body).toContain('aria-label');
+    expect(js.body).toContain("'List view'");
+  });
+
+  it('perf: the graph keeps exactly one animation loop and stops it while the tab is hidden', async () => {
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const js = await get(stopper.url, '/app.js');
+
+    // Regression lock: the loop handle used to be re-declared inside render(), so
+    // the old loop was never cancelled and a new one was added every refresh.
+    expect(js.body).toContain('if (G.raf || reducedMotion())');
+    expect(js.body).toContain('cancelAnimationFrame');
+    expect(js.body).toContain("document.addEventListener('visibilitychange'");
+  });
+
+  it('offline posture: every asset is self-hosted and fetches stay same-origin', async () => {
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const page = await get(stopper.url, '/');
+    const css = await get(stopper.url, '/app.css');
+    const js = await get(stopper.url, '/app.js');
+
+    for (const asset of [page.body, css.body, js.body]) {
+      const urls = asset.match(/https?:\/\/[^"'\s)]+/g) ?? [];
+      // the SVG XML namespace is an identifier, not a network request
+      expect(urls.filter((u) => u !== 'http://www.w3.org/2000/svg')).toEqual([]);
+    }
+    expect(page.body).toContain('href="/app.css"');
+    expect(page.body).toContain('src="/app.js"');
+    // no inline event handlers — behaviour lives entirely in /app.js
+    expect(page.body).not.toMatch(/\son(click|load|error|change|input|submit|focus|blur|mouse\w+)=/i);
+
+    const fetches = (js.body.match(/fetch\('[^']+'/g) ?? []).sort();
+    expect(fetches).toEqual(["fetch('/api/data'", "fetch('/api/graph'"]);
   });
 });
