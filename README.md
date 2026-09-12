@@ -92,7 +92,7 @@ Three stores under one SQLite database (`~/.aegisx/memory.sqlite`, WAL + FTS5):
 
 **Hash invalidation, not timestamps.** Code knowledge is keyed to SHA-256 file-content hashes. The moment a file changes, its stale memories are gone. Zero stale answers, zero heuristics.
 
-**Budgeted recall.** A recall composes, under a hard token budget (default 2,000): this repo's facts → this repo's decisions/gotchas → symbols → last handoff → structure brief. Give it a query and the knowledge and symbol layers become FTS-ranked instead of anchored; without a query nothing from other repos can be pulled in. Overflow drops lowest-priority items first — never mid-fact.
+**Budgeted recall.** A recall composes, under a hard token budget (default 2,000): this repo's facts → this repo's decisions, gotchas and conventions → symbols → last handoff → structure brief. Give it a query and the knowledge and symbol layers become FTS-ranked instead of anchored; without a query nothing from other repos can be pulled in. Overflow drops lowest-priority items first — never mid-fact.
 
 ## 3. Installation
 
@@ -271,7 +271,7 @@ The block instructs the agent to:
 
 1. **recall at session start** — before anything else, call `aegisxmemory_recall` for the current repo;
 2. **remember stable facts immediately** — test command, stack, ports, conventions;
-3. **record decisions/gotchas** — in the `save` handoff's `decisions` list, where each entry becomes a searchable knowledge entry, not chat-only;
+3. **record decisions/gotchas/conventions** — in the matching `save` handoff list, where each entry becomes a searchable knowledge entry, not chat-only;
 4. **save the handoff at session end** — so the next session resumes warm;
 5. **never try to store secrets** — the engine refuses them.
 
@@ -337,7 +337,7 @@ aegisxmemory dashboard --port 4021
 A read-only view of everything the engine remembers — refreshed every 10 s, rendered locally:
 
 - **Bento totals** — estimated tokens saved (with a sparkline), repos, facts (including how many changed since they were first pinned), knowledge entries, handoffs, and a recall hit-rate ring
-- **Knowledge graph** — interactive force-directed map (repos as hubs; facts, decisions/gotchas, and handoffs orbiting them); drag nodes to untangle; one animation loop that pauses while the tab is hidden, plus a **List view** toggle that renders the same nodes as a table for keyboard and screen-reader users
+- **Knowledge graph** — interactive force-directed map (repos as hubs; facts, decisions/gotchas/conventions, and handoffs orbiting them); drag nodes to untangle; one animation loop that pauses while the tab is hidden, plus a **List view** toggle that renders the same nodes as a table for keyboard and screen-reader users
 - **Recall history chart** — last 50 recalls as bars you can Tab through, each with a label and tooltip (teal = hit, amber = cold miss; height ≈ tokens returned)
 - **Per-repo table** — files/symbols indexed, scans, recalls, hit rate; select a repository to see its facts and handoffs
 - **Pinned facts** — filterable, a copy button per fact, and a **changed** badge plus the value it replaced (`was: 3000 (changed 2026-09-12)`) — the same signal recall gives the agent
@@ -355,7 +355,7 @@ The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose i
 | `aegisxmemory remember <key> <value>` | pin a stable fact |
 | `aegisxmemory forget <key>` | delete a fact (and its superseded values) |
 | `aegisxmemory history [key]` | what a pinned fact used to be (timeline of superseded values) |
-| `aegisxmemory save --json <file\|->` | persist a session handoff (JSON file or stdin); each decision is also stored as searchable knowledge |
+| `aegisxmemory save --json <file\|->` | persist a session handoff (JSON file or stdin); each decision, gotcha and convention is also stored as searchable knowledge |
 | `aegisxmemory resume` | print last handoff + memory for this repo |
 | `aegisxmemory stats [path] [--json]` | observability: files/symbols, scans, recalls, hit rate, tokens saved |
 | `aegisxmemory watch [path] [--poll] [--debounce n]` | event-driven auto-index (chokidar, polling fallback) |
@@ -477,13 +477,20 @@ The handoff is what makes the *next* session warm. Pipe it via stdin (`save --js
   "goal": "what this session was trying to achieve",
   "facts": ["verified facts: exact errors, paths, commands"],
   "decisions": ["decision taken — with a one-line reason"],
+  "gotchas": ["trap that cost time — what the next session should avoid"],
+  "conventions": ["project rule the next session must follow"],
   "nextSteps": ["actionable steps for the next session"]
 }
 ```
 
 - `goal` — one sentence.
 - `facts` — things verified during the session (a failing test's error line, the command that reproduced a bug). Not opinions.
-- `decisions` — the "we chose X over Y because Z" entries. Each one is **also stored as a knowledge entry**, upserted by its sentence, so it stays findable in later sessions instead of living only inside the handoff it was written in; `save` reports how many were new (`2 decisions recorded`) and how many were already known.
+- `decisions` — the "we chose X over Y because Z" entries.
+- `gotchas` — *optional*; the traps. Things that cost time and will cost it again.
+- `conventions` — *optional*; the house rules a newcomer (or a forgetful agent) would otherwise break.
+
+All three note lists are **also stored as knowledge entries**, each upserted by its sentence under its own kind (`decision` / `gotcha` / `convention`), so a note stays findable in later sessions instead of living only inside the handoff it was written in. `save` reports what it learned (`2 notes recorded`, `1 already known`), and a sentence repeated across sessions is refreshed rather than duplicated. `gotchas` and `conventions` are optional so handoffs written before them existed still parse.
+
 - `nextSteps` — concrete, actionable items; the next session's to-do list.
 
 `resume` prints the last handoff plus the repo's facts, knowledge, and symbols — everything an agent needs to continue without re-reading the codebase.

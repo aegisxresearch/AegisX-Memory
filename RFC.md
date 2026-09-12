@@ -65,7 +65,7 @@ Every AI coding session repeats the same expensive cycle:
 **Why three stores?** Separation by *mutability and purpose*:
 
 - **FactStore** — stable facts that rarely change: user preferences, project stack, build/test commands, conventions. Keyed, dot-namespaced (`project.<repo>.test-cmd`). Recalled by FTS + workspace relevance, *never* by recency alone.
-- **KnowledgeGraph** — structured code knowledge: symbols, module boundaries, decisions (ADRs), gotchas. Built deterministically from the indexer + explicit `save` calls. This is what replaces "read the codebase again".
+- **KnowledgeGraph** — structured code knowledge: symbols, module boundaries, decisions (ADRs), gotchas, conventions. Built deterministically from the indexer + explicit `save` calls. This is what replaces "read the codebase again".
 - **SessionStore** — compressed session summaries for handoff ("what we did, what we learned, what's next"). Written at session end (`save`), injected on `resume`.
 
 ### 2.2 Indexing strategy — the anti-reread core
@@ -161,7 +161,7 @@ CREATE INDEX idx_symbols_repo_file ON symbols(repo, file_path);
 CREATE INDEX idx_symbols_name ON symbols(name);
 CREATE VIRTUAL TABLE symbols_fts USING fts5(name, detail, content='symbols', content_rowid='id');
 
--- Decisions & gotchas: explicit, human-curated knowledge
+-- Decisions, gotchas & conventions: explicit, human-curated knowledge
 CREATE TABLE knowledge (
   id         INTEGER PRIMARY KEY,
   repo       TEXT NOT NULL,
@@ -180,6 +180,8 @@ CREATE TABLE sessions (
   goal        TEXT NOT NULL,
   facts       TEXT NOT NULL,                -- JSON: verified facts
   decisions   TEXT NOT NULL,                -- JSON: decisions + reasons
+  gotchas     TEXT NOT NULL DEFAULT '[]',   -- JSON: traps worth avoiding (v1.16)
+  conventions TEXT NOT NULL DEFAULT '[]',   -- JSON: project rules (v1.16)
   next_steps  TEXT NOT NULL,                -- JSON: actionable list
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -197,7 +199,9 @@ interface SymbolRecord { filePath: string; kind: 'function'|'class'|'export'|'ma
                          name: string | null; line: number; detail?: string }
 interface KnowledgeRecord { kind: 'decision'|'gotcha'|'convention'|'lesson';
                             title: string; body: string; anchors: string[] }
-interface SessionHandoff { goal: string; facts: string[]; decisions: string[]; nextSteps: string[] }
+interface SessionHandoff { goal: string; facts: string[]; decisions: string[];
+                            gotchas: string[]; conventions: string[]; nextSteps: string[] }
+// callers may omit gotchas/conventions: SessionHandoffInput keeps them optional
 interface RecallResult { brief: string; facts: MemoryFact[]; symbols: SymbolRecord[];
                          knowledge: KnowledgeRecord[]; lastSession?: SessionHandoff;
                          tokenEstimate: number }
@@ -228,7 +232,7 @@ All commands exit 0 on success, 1 on user error, 2 on internal error. Errors pri
 |---|---|---|
 | `aegisxmemory_recall` | `{ query?: string, repo?: string }` | `RecallResult` as markdown |
 | `aegisxmemory_remember` | `{ key, value }` | confirmation |
-| `aegisxmemory_save` | `{ goal, facts[], decisions[], nextSteps[] }` | confirmation |
+| `aegisxmemory_save` | `{ goal, facts[], decisions[], gotchas[]?, conventions[]?, nextSteps[] }` | confirmation + how many notes were new |
 | `aegisxmemory_index` | `{ path?, watch?: boolean }` | scan stats |
 
 `repo` defaults to the MCP client's cwd-derived workspace root; keys are auto-namespaced by normalized repo path, preventing cross-project contamination.
@@ -325,4 +329,6 @@ quoted and unquoted scalar values, so auto-generated entries are detected.
 
 **Amendment (v1.14):** A query-less recall is now anchored end to end. `recall(null, repo)` used the repo path as its effective FTS seed, which made the anchors decorative: the repo's own decisions were returned only if their text happened to contain path tokens — so the "Decisions & gotchas" block that §v1.13 populates stayed invisible at session start — and `Store.searchFacts`, the one search here with no repo predicate, returned another project's fact whenever that fact named this repo's path verbatim (a phrase match needs the whole path, but "diff against /path/to/alpha before merging" is exactly the kind of note a sibling checkout produces). `Engine.recall` now branches on `anchored = query === null && repo !== null`: facts come from `factsForRepo`, knowledge from `knowledgeForRepo`, symbols from `topSymbols`, and no FTS search runs at all. Supplying a query restores ranked behaviour, with knowledge searched through the already repo-scoped `searchKnowledge` (and allowlist-filtered when the recall has no repo). The FTS escape remains only as the "is there anything searchable here?" gate (§v1.11b). `test/knowledge.test.ts` locks both halves — the repo's own decision appears without a query, and a fact in another repo that names this repo's path does not — and both tests fail against the previous implementation.
 
-**Amendment (v1.15):** Knowledge backfill. Sessions stored before v1.13 are the only record of the decisions taken in them, so an upgrade would still have shown only what happened *after* it. `Store` now folds each stored handoff's `decisions` into knowledge on the first open after the upgrade, through the same `recordHandoffNotes` the live save path uses: upserted by sentence (a line repeated across several handoffs becomes one entry, and the whole scan is idempotent), scoped to the handoff's repo, and with anything matching `containsSecret` skipped rather than re-published — rows written before the storage-time secret scan (§v1.2) can still hold a credential, and copying one into a new table would undo exactly what that scan was added to prevent. The scan runs once per database, recorded in the `meta` table under `knowledge-backfill` as `{sessions, recorded, alreadyKnown, skippedSecrets, at}`, which `doctor` surfaces as its own check (`knowledge backfill: 3 entries from 3 old handoffs, 1 already known`) so a migration that happens on open is not invisible; a mangled `decisions` column is skipped instead of aborting the open. `Engine.knowledgeBackfillReport()` is the read seam and `DoctorEngine` mirrors it. Tests cover the fold, the cross-handoff collapse, the once-only marker, the secret skip, the malformed column, and the doctor line. Not included: `gotchas` and `conventions` as their own handoff fields and knowledge kinds — the schema, CLI parser, MCP tool schemas and `sessions` columns would all have to grow, and the handoff has no such field today, so a gotcha is still recorded by putting it in `decisions` (where it lands as `kind: decision`).
+**Amendment (v1.15):** Knowledge backfill. Sessions stored before v1.13 are the only record of the decisions taken in them, so an upgrade would still have shown only what happened *after* it. `Store` now folds each stored handoff's `decisions` into knowledge on the first open after the upgrade, through the same `recordHandoffNotes` the live save path uses: upserted by sentence (a line repeated across several handoffs becomes one entry, and the whole scan is idempotent), scoped to the handoff's repo, and with anything matching `containsSecret` skipped rather than re-published — rows written before the storage-time secret scan (§v1.2) can still hold a credential, and copying one into a new table would undo exactly what that scan was added to prevent. The scan runs once per database, recorded in the `meta` table under `knowledge-backfill` as `{sessions, recorded, alreadyKnown, skippedSecrets, at}`, which `doctor` surfaces as its own check (`knowledge backfill: 3 entries from 3 old handoffs, 1 already known`) so a migration that happens on open is not invisible; a mangled `decisions` column is skipped instead of aborting the open. `Engine.knowledgeBackfillReport()` is the read seam and `DoctorEngine` mirrors it. Tests cover the fold, the cross-handoff collapse, the once-only marker, the secret skip, the malformed column, and the doctor line. Not included: `gotchas` and `conventions` as their own handoff fields and knowledge kinds — the schema, CLI parser, MCP tool schemas and `sessions` columns would all have to grow, and the handoff has no such field today, so a gotcha is still recorded by putting it in `decisions` (where it lands as `kind: decision`). **[Implemented in v1.16.]**
+
+**Amendment (v1.16):** Gotchas and conventions are first-class handoff notes. `SessionHandoff` gains `gotchas[]` and `conventions[]`, stored in two new `sessions` columns (`TEXT NOT NULL DEFAULT '[]'`, added by `ALTER TABLE... ADD COLUMN` on open when missing — the first column migration here, and the default keeps existing rows valid). Because breaking every agent that only knows the original four fields would be worse than any tidiness, the caller edge stays tolerant: `SessionHandoffInput` keeps both lists optional, the CLI parser accepts their absence, and both MCP `save` tool schemas mark them `.optional()` — `Engine.saveSession` normalizes once (`?? []`) before the secret scan, the stored row, and the knowledge notes, so a credential hiding in a gotcha is refused exactly like one in a decision. `recordHandoffNotes` is kind-aware (`decisions` → `decision`, `gotchas` → `gotcha`, `conventions` → `convention`), all still upserted by sentence through `knowledgeTitle`, and `SessionSaveSummary`/`describeSessionSave` now count `notesRecorded`/`notesAlreadyKnown` ("2 notes recorded, 1 already known") since they no longer describe decisions alone; the CLI's `--json` payload carries the same pair under `knowledge`. Recall's knowledge heading becomes `## Decisions, gotchas & conventions`, the last-handoff section prints `Gotchas:` and `Conventions:` blocks, the dashboard's handoff line and graph sub-label count them, and the injected rules block (§v1.7c) now names the matching list for each note kind. The backfill (§v1.15) learned the two lists and — more importantly — got a **version**: the `meta` marker records `version: 2`, and a scan is skipped only when the recorded version is at least the current one, so a marker written by the previous backfill (no `version` field) counts as 0 and an install that already ran it re-scans once, folding the gotchas and conventions the older scan could not see while decisions upsert onto themselves instead of duplicating. Tests cover the three kinds, the round-trip through `resume`, an old-shaped handoff, a secret in a gotcha, the column migration, and the version-bumped re-scan — plus two MCP stdio tests asserting the old four-field shape still saves over the wire and that gotchas/conventions survive the tool schema.

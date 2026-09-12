@@ -92,7 +92,7 @@ Tiga store di bawah satu database SQLite (`~/.aegisx/memory.sqlite`, WAL + FTS5)
 
 **Invalidasi berbasis hash, bukan timestamp.** Pengetahuan kode dikunci ke hash SHA-256 isi file. Begitu file berubah, memorinya yang basi langsung hilang. Nol jawaban basi, nol heuristik.
 
-**Recall beranggaran.** Satu recall merangkai, dalam batas token yang ketat (default 2.000): fakta repo ini → keputusan/gotcha repo ini → simbol → handoff terakhir → ringkasan struktur. Beri query dan lapisan knowledge serta simbol berubah dari ter-anchor menjadi berperingkat FTS; tanpa query, tidak ada memori repo lain yang bisa ikut tertarik. Kalau kelebihan, item prioritas terendah yang dibuang lebih dulu — tidak pernah di tengah fakta.
+**Recall beranggaran.** Satu recall merangkai, dalam batas token yang ketat (default 2.000): fakta repo ini → keputusan, gotcha, dan konvensi repo ini → simbol → handoff terakhir → ringkasan struktur. Beri query dan lapisan knowledge serta simbol berubah dari ter-anchor menjadi berperingkat FTS; tanpa query, tidak ada memori repo lain yang bisa ikut tertarik. Kalau kelebihan, item prioritas terendah yang dibuang lebih dulu — tidak pernah di tengah fakta.
 
 ## 3. Instalasi
 
@@ -271,7 +271,7 @@ Blok itu menginstruksikan agent untuk:
 
 1. **recall di awal sesi** — sebelum apa pun, panggil `aegisxmemory_recall` untuk repo saat ini;
 2. **langsung remember fakta stabil** — perintah test, stack, port, konvensi;
-3. **mencatat keputusan/gotcha** — di daftar `decisions` pada handoff `save`, dan setiap entri tersimpan sebagai knowledge yang bisa dicari, bukan hanya di obrolan;
+3. **mencatat keputusan/gotcha/konvensi** — di daftar yang sesuai pada handoff `save`, dan setiap entri tersimpan sebagai knowledge yang bisa dicari, bukan hanya di obrolan;
 4. **save handoff di akhir sesi** — supaya sesi berikutnya lanjut hangat;
 5. **tidak pernah mencoba menyimpan secret** — engine menolaknya.
 
@@ -337,7 +337,7 @@ aegisxmemory dashboard --port 4021
 Tampilan read-only dari semua yang diingat engine — menyegarkan tiap 10 detik, dirender lokal:
 
 - **Kartu total bergaya bento** — estimasi token yang dihemat (plus sparkline), repos, fakta (termasuk berapa yang berubah sejak pertama di-pin), entri knowledge, handoff, dan cincin hit-rate recall
-- **Knowledge graph** — peta force-directed interaktif (repo sebagai hub; fakta, keputusan/gotcha, dan handoff mengorbitnya); drag node untuk merapikan; satu loop animasi saja yang berhenti saat tab disembunyikan, plus tombol **List view** yang menampilkan node yang sama sebagai tabel untuk pengguna keyboard dan screen reader
+- **Knowledge graph** — peta force-directed interaktif (repo sebagai hub; fakta, keputusan/gotcha/konvensi, dan handoff mengorbitnya); drag node untuk merapikan; satu loop animasi saja yang berhenti saat tab disembunyikan, plus tombol **List view** yang menampilkan node yang sama sebagai tabel untuk pengguna keyboard dan screen reader
 - **Graf riwayat recall** — 50 recall terakhir sebagai bar yang bisa di-Tab, masing-masing punya label dan tooltip (teal = hit, kuning = miss dingin; tinggi ≈ token yang dikembalikan)
 - **Tabel per-repo** — file/simbol terindeks, scan, recall, hit rate; pilih sebuah repo untuk melihat fakta dan handoff-nya
 - **Fakta ter-pin** — bisa difilter, ada tombol copy per fakta, dan badge **changed** beserta nilai yang digantikannya (`was: 3000 (changed 2026-09-12)`) — sinyal yang sama dengan yang diterima agent saat recall
@@ -355,7 +355,7 @@ Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membuka
 | `aegisxmemory remember <key> <value>` | pin fakta stabil |
 | `aegisxmemory forget <key>` | hapus fakta (beserta nilai-nilai lamanya) |
 | `aegisxmemory history [key]` | nilai lama sebuah fakta (linimasa nilai yang sudah digantikan) |
-| `aegisxmemory save --json <file\|->` | simpan handoff sesi (file JSON atau stdin); setiap keputusan juga tersimpan sebagai knowledge yang bisa dicari |
+| `aegisxmemory save --json <file\|->` | simpan handoff sesi (file JSON atau stdin); setiap keputusan, gotcha, dan konvensi juga tersimpan sebagai knowledge yang bisa dicari |
 | `aegisxmemory resume` | cetak handoff terakhir + memori repo ini |
 | `aegisxmemory stats [path] [--json]` | observability: file/simbol, scan, recall, hit rate, token hemat |
 | `aegisxmemory watch [path] [--poll] [--debounce n]` | auto-index event-driven (chokidar, fallback polling) |
@@ -477,13 +477,20 @@ Handoff adalah yang membuat sesi *berikutnya* hangat. Kirim lewat stdin (`save -
   "goal": "apa yang sesi ini coba capai",
   "facts": ["fakta terverifikasi: error persis, path, perintah"],
   "decisions": ["keputusan yang diambil — dengan alasan satu baris"],
+  "gotchas": ["jebakan yang memakan waktu — yang harus dihindari sesi berikutnya"],
+  "conventions": ["aturan proyek yang harus dipatuhi sesi berikutnya"],
   "nextSteps": ["langkah konkret untuk sesi berikutnya"]
 }
 ```
 
 - `goal` — satu kalimat.
 - `facts` — hal-hal yang terverifikasi selama sesi (baris error test yang gagal, perintah yang mereproduksi bug). Bukan opini.
-- `decisions` — entri "kami pilih X daripada Y karena Z". Setiap entri **juga tersimpan sebagai entri knowledge**, di-upsert berdasarkan kalimatnya, jadi tetap bisa ditemukan di sesi berikutnya dan tidak hanya hidup di dalam handoff tempat ia ditulis; `save` melaporkan berapa yang baru (`2 decisions recorded`) dan berapa yang sudah diketahui.
+- `decisions` — entri "kami pilih X daripada Y karena Z".
+- `gotchas` — *opsional*; jebakannya. Hal yang memakan waktu dan akan memakan waktu lagi.
+- `conventions` — *opsional*; aturan rumah yang akan dilanggar pendatang baru (atau agent yang lupa).
+
+Ketiga daftar catatan itu **juga tersimpan sebagai entri knowledge**, di-upsert berdasarkan kalimatnya dengan kind masing-masing (`decision` / `gotcha` / `convention`), jadi catatan tetap bisa ditemukan di sesi berikutnya dan tidak hanya hidup di dalam handoff tempat ia ditulis. `save` melaporkan apa yang baru dipelajari (`2 notes recorded`, `1 already known`), dan kalimat yang berulang antar-sesi diperbarui, bukan diduplikasi. `gotchas` dan `conventions` opsional supaya handoff yang ditulis sebelum keduanya ada tetap bisa dibaca.
+
 - `nextSteps` — langkah konkret yang bisa dikerjakan; daftar tugas sesi berikutnya.
 
 `resume` mencetak handoff terakhir ditambah fakta, knowledge, dan simbol milik repo itu — semua yang agent butuhkan untuk melanjutkan tanpa membaca ulang codebase.
