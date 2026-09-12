@@ -38,6 +38,18 @@ function claudeFile(): string {
 function cursorFile(): string {
   return path.join(workspace, 'home', '.cursor', 'mcp.json');
 }
+function geminiFile(): string {
+  return path.join(workspace, 'home', '.gemini', 'settings.json');
+}
+function windsurfFile(): string {
+  return path.join(workspace, 'home', '.codeium', 'windsurf', 'mcp_config.json');
+}
+function codexFile(): string {
+  return path.join(workspace, 'home', '.codex', 'config.toml');
+}
+function vscodeFile(): string {
+  return path.join(workspace, 'repo', '.vscode', 'mcp.json');
+}
 
 function write(file: string, content: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -168,6 +180,140 @@ describe('auto-setup — claude/cursor (JSON)', () => {
     write(file, '{ not json !!');
     expect(() => installForAgent('claude', { configPath: file, config: cfg })).toThrow(AegisxError);
     expect(fs.readFileSync(file, 'utf8')).toBe('{ not json !!');
+  });
+});
+
+describe('auto-setup — gemini/cursor/windsurf (plain mcpServers JSON)', () => {
+  it('happy: gemini settings.json gets the mcpServers entry', () => {
+    const result = installForAgent('gemini', { configPath: geminiFile(), config: cfg });
+    expect(result.action).toBe('created');
+    const parsed = JSON.parse(fs.readFileSync(geminiFile(), 'utf8')) as {
+      mcpServers: Record<string, { command: string }>;
+    };
+    expect(parsed.mcpServers['aegisx-memory']?.command).toBe('node');
+  });
+
+  it('happy: windsurf mcp_config.json gets the mcpServers entry, idempotent', () => {
+    const file = windsurfFile();
+    expect(installForAgent('windsurf', { configPath: file, config: cfg }).action).toBe('created');
+    const first = fs.readFileSync(file, 'utf8');
+    expect(installForAgent('windsurf', { configPath: file, config: cfg }).action).toBe('unchanged');
+    expect(fs.readFileSync(file, 'utf8')).toBe(first);
+  });
+
+  it('negative: invalid gemini JSON is refused, file untouched', () => {
+    const file = geminiFile();
+    write(file, '{{ nope');
+    expect(() => installForAgent('gemini', { configPath: file, config: cfg })).toThrow(AegisxError);
+    expect(fs.readFileSync(file, 'utf8')).toBe('{{ nope');
+  });
+});
+
+describe('auto-setup — codex (TOML, zero-dependency writer)', () => {
+  it('happy: appends the [mcp_servers.aegisx-memory] table with command/args/env', () => {
+    const file = codexFile();
+    const result = installForAgent('codex', {
+      configPath: file,
+      config: { command: 'node', args: ['/x/index.js', 'mcp'], env: { AEGISX_HOME: '/home' } },
+    });
+    expect(result.action).toBe('created');
+    const text = fs.readFileSync(file, 'utf8');
+    expect(text).toContain('[mcp_servers.aegisx-memory]');
+    expect(text).toContain('command = "node"');
+    expect(text).toContain('args = ["/x/index.js", "mcp"]');
+    expect(text).toContain('[mcp_servers.aegisx-memory.env]');
+    expect(text).toContain('AEGISX_HOME = "/home"');
+  });
+
+  it('happy: appends to an existing config and preserves every byte before the block', () => {
+    const file = codexFile();
+    const original = 'model = "gpt-5"\n\n[mcp_servers.other]\ncommand = "uvx"\n';
+    write(file, original);
+    const result = installForAgent('codex', { configPath: file, config: cfg });
+    expect(result.action).toBe('updated');
+    const text = fs.readFileSync(file, 'utf8');
+    expect(text.startsWith(original)).toBe(true);
+    expect(text).toContain('[mcp_servers.aegisx-memory]');
+    expect(result.backupPath).toBe(`${file}.aegisx-bak`);
+  });
+
+  it('idempotent: second run is unchanged and never duplicates the table', () => {
+    const file = codexFile();
+    installForAgent('codex', { configPath: file, config: cfg });
+    const first = fs.readFileSync(file, 'utf8');
+    expect(installForAgent('codex', { configPath: file, config: cfg }).action).toBe('unchanged');
+    expect(fs.readFileSync(file, 'utf8')).toBe(first);
+    expect(first.split('[mcp_servers.aegisx-memory]').length - 1).toBe(1);
+  });
+
+  it('happy: a file not ending in a newline does not glue the block to the last line', () => {
+    const file = codexFile();
+    write(file, 'model = "x"'); // no trailing newline
+    installForAgent('codex', { configPath: file, config: cfg });
+    const text = fs.readFileSync(file, 'utf8');
+    expect(text).toContain('model = "x"\n\n# aegisx-memory');
+  });
+
+  it('negative: a corrupt existing file is still safe — the block is appended, never a rewrite', () => {
+    const file = codexFile();
+    const broken = 'model = [unclosed\n  garbage';
+    write(file, broken);
+    const result = installForAgent('codex', { configPath: file, config: cfg });
+    expect(result.action).toBe('updated');
+    expect(fs.readFileSync(file, 'utf8').startsWith(broken)).toBe(true);
+  });
+});
+
+describe('auto-setup — vscode (.vscode/mcp.json, servers + type)', () => {
+  it('happy: nests under `servers` with type stdio, not mcpServers', () => {
+    const file = vscodeFile();
+    const result = installForAgent('vscode', { configPath: file, config: cfg });
+    expect(result.action).toBe('created');
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+      servers?: Record<string, { type?: string; command: string }>;
+      mcpServers?: unknown;
+    };
+    expect(parsed.servers?.['aegisx-memory']?.type).toBe('stdio');
+    expect(parsed.servers?.['aegisx-memory']?.command).toBe('node');
+    expect(parsed.mcpServers).toBeUndefined();
+  });
+
+  it('happy: merges with existing servers and stays idempotent', () => {
+    const file = vscodeFile();
+    write(file, JSON.stringify({ servers: { other: { command: 'uvx' } } }));
+    installForAgent('vscode', { configPath: file, config: cfg });
+    const first = fs.readFileSync(file, 'utf8');
+    expect(installForAgent('vscode', { configPath: file, config: cfg }).action).toBe('unchanged');
+    const parsed = JSON.parse(first) as { servers: Record<string, unknown> };
+    expect(Object.keys(parsed.servers).sort()).toEqual(['aegisx-memory', 'other']);
+  });
+});
+
+describe('auto-setup — env override semantics (directory, not file)', () => {
+  const prevEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of ['GEMINI_CLI_HOME', 'CODEX_HOME']) {
+      prevEnv[key] = process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(prevEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it('GEMINI_CLI_HOME and CODEX_HOME join the file name — never swallowed whole', () => {
+    const geminiHome = path.join(workspace, 'gemini-home');
+    const codexHome = path.join(workspace, 'codex-home');
+    process.env['GEMINI_CLI_HOME'] = geminiHome;
+    process.env['CODEX_HOME'] = codexHome;
+    installForAgent('gemini', { config: cfg });
+    installForAgent('codex', { config: cfg });
+    expect(fs.existsSync(path.join(geminiHome, 'settings.json'))).toBe(true);
+    expect(fs.existsSync(path.join(codexHome, 'config.toml'))).toBe(true);
   });
 });
 

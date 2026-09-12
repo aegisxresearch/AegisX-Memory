@@ -276,10 +276,18 @@ describe('doctor — fix pass (--fix)', () => {
   });
 
   it('negative: MCP registration warnings are never auto-fixed', () => {
-    const report = runDoctor(dbFile, repoDir, { fix: true });
-    const mcpFixTouched = report.fixes?.applied.some((f) => f.toLowerCase().includes('mcp')) ?? false;
-    expect(mcpFixTouched).toBe(false);
-    expect(statusOf(report.checks, 'mcp registration')?.status).toBe('warn');
+    // Hermetic: without this, a real registration on the machine removes the
+    // check this test exists to pin.
+    const realHomedir = os.homedir;
+    os.homedir = () => homeDir;
+    try {
+      const report = runDoctor(dbFile, repoDir, { fix: true });
+      const mcpFixTouched = report.fixes?.applied.some((f) => f.toLowerCase().includes('mcp')) ?? false;
+      expect(mcpFixTouched).toBe(false);
+      expect(statusOf(report.checks, 'mcp registration')?.status).toBe('warn');
+    } finally {
+      os.homedir = realHomedir;
+    }
   });
 
   it('fix output is rendered with applied/skipped sections', () => {
@@ -345,22 +353,38 @@ describe('doctor — registration coverage', () => {
   it('warn: an installed CLI with no registration anywhere is already covered by the existing warn', () => {
     delete process.env['HERMES_HOME'];
     delete process.env['CLAUDE_CONFIG'];
-    const report = runDoctor(dbFile, null);
-    const names = report.checks.map((c) => c.name);
-    expect(names).toContain('mcp registration');
-    expect(names).not.toContain('mcp registration coverage'); // nothing registered → single warn
+    // Hermetic: the machine's real home may carry registrations from a live
+    // install — point homedir at the empty workspace home instead.
+    const realHomedir = os.homedir;
+    os.homedir = () => homeDir;
+    try {
+      const report = runDoctor(dbFile, null);
+      const names = report.checks.map((c) => c.name);
+      expect(names).toContain('mcp registration');
+      expect(names).not.toContain('mcp registration coverage'); // nothing registered → single warn
+    } finally {
+      os.homedir = realHomedir;
+    }
   });
 
   it('warn: one agent registered names the others as installed-but-unregistered', () => {
     writeHermesRegistration();
     delete process.env['CLAUDE_CONFIG'];
-    const report = runDoctor(dbFile, null);
-    const coverage = report.checks.find((c) => c.name === 'mcp registration coverage');
-    expect(coverage).toBeDefined();
-    expect(coverage?.status).toBe('warn');
-    expect(coverage?.detail).toContain('claude');
-    expect(coverage?.detail).toContain('cursor');
-    expect(coverage?.detail).not.toContain('hermes');
+    const realHomedir = os.homedir;
+    os.homedir = () => homeDir; // hermetic — never read the machine's real home
+    try {
+      const report = runDoctor(dbFile, null);
+      const coverage = report.checks.find((c) => c.name === 'mcp registration coverage');
+      expect(coverage).toBeDefined();
+      expect(coverage?.status).toBe('warn');
+      expect(coverage?.detail).toContain('claude');
+      expect(coverage?.detail).toContain('cursor');
+      expect(coverage?.detail).toContain('gemini');
+      expect(coverage?.detail).toContain('codex');
+      expect(coverage?.detail).not.toContain('hermes');
+    } finally {
+      os.homedir = realHomedir;
+    }
   });
 
   it('negative: no coverage warn when every known agent is registered', () => {
@@ -368,19 +392,28 @@ describe('doctor — registration coverage', () => {
     const claudeConfig = path.join(workspace, 'claude.json');
     process.env['CLAUDE_CONFIG'] = claudeConfig;
     fs.writeFileSync(claudeConfig, JSON.stringify({ mcpServers: { 'aegisx-memory': { command: 'node', args: ['/x/dist/cli/index.js', 'mcp'] } } }));
-    // Cursor's config derives from the homedir, and doctor reads os.homedir()
-    // at call time — mock it so the test never reaches the real home.
+    const entry = { command: 'node', args: ['/x/dist/cli/index.js', 'mcp'] };
+    // Cursor, Gemini, Windsurf and Codex derive their config paths from the
+    // homedir; doctor reads os.homedir() at call time, so mock it.
     fs.mkdirSync(path.join(workspace, '.cursor'), { recursive: true });
-    fs.writeFileSync(
-      path.join(workspace, '.cursor', 'mcp.json'),
-      JSON.stringify({ mcpServers: { 'aegisx-memory': { command: 'node', args: ['/x/dist/cli/index.js', 'mcp'] } } }),
-    );
+    fs.writeFileSync(path.join(workspace, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { 'aegisx-memory': entry } }));
+    fs.mkdirSync(path.join(workspace, '.gemini'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.gemini', 'settings.json'), JSON.stringify({ mcpServers: { 'aegisx-memory': entry } }));
+    fs.mkdirSync(path.join(workspace, '.codeium', 'windsurf'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.codeium', 'windsurf', 'mcp_config.json'), JSON.stringify({ mcpServers: { 'aegisx-memory': entry } }));
+    fs.mkdirSync(path.join(workspace, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.codex', 'config.toml'), '[mcp_servers."aegisx-memory"]\ncommand = "node"\nargs = ["/x/dist/cli/index.js", "mcp"]\n');
+    // VS Code nests under `servers` in <repo>/.vscode/mcp.json; with the repo
+    // threading fix, the repo passed to runDoctor decides where to look.
+    const scratchRepo = path.join(workspace, 'scratch-repo');
+    fs.mkdirSync(path.join(scratchRepo, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(scratchRepo, '.vscode', 'mcp.json'), JSON.stringify({ servers: { 'aegisx-memory': { type: 'stdio', ...entry } } }));
     const realHomedir = os.homedir;
     os.homedir = () => workspace;
     try {
-      const report = runDoctor(dbFile, null);
+      const report = runDoctor(dbFile, scratchRepo);
       expect(report.checks.find((c) => c.name === 'mcp registration coverage')).toBeUndefined();
-      expect(report.checks.filter((c) => c.name.startsWith('mcp: '))).toHaveLength(3);
+      expect(report.checks.filter((c) => c.name.startsWith('mcp: '))).toHaveLength(7);
     } finally {
       os.homedir = realHomedir;
     }

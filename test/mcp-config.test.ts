@@ -112,7 +112,7 @@ describe('mcp-config generator', () => {
     expect(parseAgentArg(undefined)).toBe('all');
     expect(parseAgentArg('hermes')).toBe('hermes');
     expect(() => parseAgentArg('chatgpt')).toThrow(AegisxError);
-    expect(() => parseAgentArg('chatgpt')).toThrow(/hermes, claude, cursor, all/);
+    expect(() => parseAgentArg('chatgpt')).toThrow(/hermes, claude, cursor, gemini, codex, windsurf, vscode, all/);
     expect(() => renderConfig('chatgpt', defaultServerConfig())).toThrow(AegisxError);
   });
 

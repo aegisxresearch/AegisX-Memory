@@ -40,7 +40,11 @@ const AGENT_LABELS: ReadonlyArray<{ key: string; agent: SetupAgent | 'all'; hint
   { key: '1', agent: 'hermes', hint: 'Hermes Agent' },
   { key: '2', agent: 'claude', hint: 'Claude (Desktop / Code)' },
   { key: '3', agent: 'cursor', hint: 'Cursor' },
-  { key: '4', agent: 'all', hint: 'Semua / All of the above' },
+  { key: '4', agent: 'gemini', hint: 'Gemini CLI' },
+  { key: '5', agent: 'codex', hint: 'Codex CLI (OpenAI)' },
+  { key: '6', agent: 'windsurf', hint: 'Windsurf' },
+  { key: '7', agent: 'vscode', hint: 'VS Code / Copilot (repo ini)' },
+  { key: '8', agent: 'all', hint: 'Semua / All of the above' },
 ];
 
 function resolveAgents(answer: string): SetupAgent[] | null {
@@ -114,7 +118,7 @@ export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}
     const rl = readline.createInterface({ input, output });
     try {
       printMenu();
-      const agentAnswer = await askUntil(rl, 'Pilih 1-4 [Enter = 1, Hermes]: ', resolveAgents);
+      const agentAnswer = await askUntil(rl, 'Pilih 1-8 [Enter = 1, Hermes]: ', resolveAgents);
       const agents = resolveAgents(agentAnswer) ?? ['hermes'];
       const rulesAnswer = await askUntil(
         rl,

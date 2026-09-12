@@ -12,6 +12,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { SERVER_INSTRUCTIONS } from './tools.js';
 import { Engine } from '../core/engine.js';
 import { dbPath } from '../core/paths.js';
 import { registerMemoryTools } from './tools.js';
@@ -232,7 +233,7 @@ function handleTransportError(res: http.ServerResponse, err: unknown): void {
  * (which owns the SQLite connection) stays shared and cheap.
  */
 export function buildMcpServer(engine: Engine): McpServer {
-  const server = new McpServer({ name: 'aegisx-memory', version: '1.0.0' });
+  const server = new McpServer({ name: 'aegisx-memory', version: '1.0.0' }, { instructions: SERVER_INSTRUCTIONS });
 
   // One shared registration, so the HTTP transport exposes exactly the same
   // tools as stdio — including `aegisxmemory_graph`, which this server used to

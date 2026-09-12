@@ -60,12 +60,32 @@ function renderGraph(g: ReturnType<Engine['graphData']>, maxNodes: number): stri
   return lines.join('\n');
 }
 
+/**
+ * Server-level instructions (MCP `initialize` → `instructions` field).
+ *
+ * This is the one channel that does not depend on the agent *choosing* to read
+ * a rules file: conforming clients inject it into the model's context when the
+ * server connects. It is deliberately short and imperative — it states the
+ * standing behavior (recall first, save last) rather than describing features,
+ * because an agent that must infer the behavior is an agent that skips it when
+ * a question looks small.
+ */
+export const SERVER_INSTRUCTIONS = [
+  'AegisX-Memory: persistent project memory. Standing behavior, not opt-in:',
+  '1. At the start of ANY working session (yes, even for a small question), call aegisxmemory_recall for this repo first and use its block instead of re-reading covered code.',
+  '2. Read the closing coverage comment: "complete" means nothing was withheld; "(more exist)" or "budget dropped" means it was clipped — query again for what you need; "N in handoff" means those notes appear in the handoff section.',
+  '3. If the block says no indexed files, call aegisxmemory_index once, then recall again.',
+  '4. When you learn a stable fact, call aegisxmemory_remember (key: project.<name>.<key>).',
+  '5. At the end of every session (or after a meaningful change), call aegisxmemory_save with goal/facts/decisions/gotchas/conventions/nextSteps — that is what makes the next session start warm.',
+  'Never store secrets; the engine refuses them.',
+].join('\n');
+
 /** Attach the five memory tools to a server. Callers own `engine` (and its
  *  lifetime); connections stay open for the server's life. */
 export function registerMemoryTools(server: McpServer, engine: Engine): void {
   server.tool(
     'aegisxmemory_recall',
-    'Get budgeted project memory: facts, decisions/gotchas, relevant symbols, and the last session handoff. Facts include previousValue when a key was re-pinned. Use at session start instead of re-reading the codebase.',
+    'MANDATORY at session start, before reading any file — including small questions. Returns budgeted project memory: facts, decisions/gotchas, relevant symbols, last handoff. Read the closing coverage comment: "complete" = nothing withheld; "(more exist)"/"budget dropped" = clipped, query again; "N in handoff" = printed below.',
     {
       query: z.string().optional().describe('optional search query; omit for repo-scoped recall'),
       repo: z.string().optional().describe('repo root path; defaults to the server cwd'),
@@ -121,7 +141,7 @@ export function registerMemoryTools(server: McpServer, engine: Engine): void {
 
   server.tool(
     'aegisxmemory_save',
-    'Persist a session handoff: goal, verified facts, decisions with reasons, gotchas to avoid, project conventions, and actionable next steps. Call at session end. Each decision, gotcha and convention is also recorded as searchable knowledge (upserted by its sentence), so it stays findable in later sessions.',
+    'MANDATORY at session end (or after a meaningful change) — this is what makes the next session start warm. Persists goal, verified facts, decisions with reasons, gotchas, conventions, next steps; each decision/gotcha/convention also becomes searchable knowledge (upserted by sentence). Skip it and the next session starts cold.',
     {
       goal: z.string().describe('what this session was trying to achieve'),
       facts: z.array(z.string()).describe('verified facts (exact errors, paths, commands)'),
@@ -142,7 +162,7 @@ export function registerMemoryTools(server: McpServer, engine: Engine): void {
 
   server.tool(
     'aegisxmemory_index',
-    'Incrementally index a repo (hash-based: only changed files re-extracted). Secrets and junk dirs are skipped automatically.',
+    'Call once for a repo the recall block reports as not yet indexed (then recall again). Incremental and hash-based: only changed files re-extracted; secrets and junk dirs skipped automatically.',
     {
       path: z.string().optional().describe('repo root; defaults to the server cwd'),
       watch: z.boolean().optional().describe('ignored over MCP; use `aegisxmemory index --watch` in a terminal'),

@@ -28,6 +28,8 @@
 | 0.1 | **Blok aturan ("soul") ditulis ulang** — kontrak eksplisit: kapan recall, cara membaca baris cakupan (`complete` / `(more exist)` / `budget dropped` / `N in handoff`), kapan `remember`, ke mana catatan pergi, cara memperbaiki memori, larangan rahasia | `src/cli/auto-setup.ts` · tes kontrak di `test/auto-setup.test.ts` |
 | 0.2 | **Satu file untuk semua agent: `AGENTS.md`** di root repo — dibaca Codex, Cursor, Copilot, Gemini CLI, Zed tanpa setup per-klien | `installProjectRules()` · `mcp-config --project-rules [dir]` · 5 tes |
 | 0.3 | **Wizard menanam file repo**, otomatis, dengan penjaga: tidak pernah menulis ke direktori home | `runSetupWizard(engine, { projectDir })` · 3 tes |
+| 0.4 | **Lapisan salience di protokol MCP** — server mengirim `instructions` (kontrak ringkas, diinjeksikan klien ke konteks model) dan deskripsi tool yang *memerintah* ("call this BEFORE reading files"), bukan menyapa | `src/mcp/server.ts`, `src/mcp/http-server.ts`, `src/mcp/tools.ts` · bekerja tanpa kepatuhan pada file aturan |
+| 0.5 | **Penulis config: Gemini CLI, Codex (TOML tanpa dependensi), Windsurf, VS Code** — SETUP_AGENTS kini 7 klien | `installForAgent` · 12 tes baru · doctor mendeteksi & menghitung cakupan ketujuhnya |
 
 Biaya blok: **±690 token**, dibaca sekali per sesi per repo.
 
@@ -35,13 +37,13 @@ Biaya blok: **±690 token**, dibaca sekali per sesi per repo.
 
 ## Fase 1 — "Satu perintah, semua agent" (P0)
 
-Hari ini hanya tiga klien punya penulis config: Hermes, Claude, Cursor. Sisanya hanya dapat `AGENTS.md` (aturan) tetapi **tidak** dapat alat MCP-nya.
+Hari ini **tujuh** klien punya penulis config: Hermes, Claude, Cursor, Gemini CLI, Codex, Windsurf, VS Code. Yang tersisa di fase ini hanya kelengkapan: file aturan per-klien, mode non-interaktif, uninstall.
 
 | # | Item | Kenapa | Usaha | Bukti selesai |
 |---|---|---|---|---|
-| 1.1 | **Gemini CLI** — `~/.gemini/settings.json` → `mcpServers` | penulis JSON sudah ada, tinggal daftar jalur | S | tes: file dibuat, tetangga lain utuh |
-| 1.2 | **Codex CLI** — `~/.codex/config.toml` → `[mcp_servers.aegisx-memory]` | perlu penulis TOML kecil (append blok, deteksi entri lama) — **tanpa dependensi baru** | M | tes: blok dibuat, config lain tak tersentuh, idempoten |
-| 1.3 | **Windsurf** (`~/.codeium/windsurf/mcp_config.json`), **VS Code/Copilot** (`.vscode/mcp.json`), **Cline**, **Zed** (`context_servers`) | JSON semuanya | S ×4 | satu tes per jalur |
+| ~~1.1~~ | ✅ **Gemini CLI** — `~/.gemini/settings.json` → `mcpServers` (dihormati `GEMINI_CLI_HOME`) | — | — | mendarat (Fase 0, item 0.5) |
+| ~~1.2~~ | ✅ **Codex CLI** — `~/.codex/config.toml` → `[mcp_servers.aegisx-memory]`, append murni, tanpa dependensi | — | — | mendarat (Fase 0, item 0.5) |
+| 1.3 | **Cline** dan **Zed** (`context_servers`) — dua penulis JSON tersisa | JSON semuanya | S ×2 | satu tes per jalur |
 | 1.4 | **File aturan per-klien di repo**: `CLAUDE.md`, `GEMINI.md`, `.cursor/rules/aegisx-memory.mdc`, `.github/copilot-instructions.md` — dari blok yang sama | agent yang membaca file repo-nya sendiri tetap dapat kontraknya | S | satu tes per jalur |
 | 1.5 | **`setup --agent <name> --yes`** non-interaktif | untuk dotfiles/CI, dan untuk menuliskan setup ke skrip | S | tes: satu perintah, tidak ada tanya |
 | 1.6 | **`uninstall --agent <name>`** — cabut entri MCP + blok aturan, dengan backup | sekarang §17 hanya instruksi manual; memasang lebih mudah daripada melepas | M | tes: file kembali seperti semula |

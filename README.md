@@ -13,7 +13,7 @@ Every new AI agent session re-explores your repo: architecture, decisions, gotch
 - 🧠 **Remembers** — facts, decisions, gotchas, session handoffs, code structure
 - ⚡ **Fast** — ~1k files indexed in under 10 s; re-scans in under 200 ms
 - 🔒 **Private** — everything lives in `~/.aegisx` on your machine; no network I/O anywhere
-- 🤖 **Agent-native** — 5 MCP tools work with Hermes, Claude, Cursor, or any MCP client
+- 🤖 **Agent-native** — 5 MCP tools work with Hermes, Claude, Cursor, Gemini CLI, Codex, Windsurf, VS Code, or any MCP client
 - 📊 **Observable** — local web dashboard with an interactive knowledge graph
 
 ## ⚡ TL;DR — install, run `setup`, answer 2 questions. Done.
@@ -204,10 +204,12 @@ The CLI is great for you, but the real win is the agent calling the tools itself
 aegisxmemory setup                                  # guided wizard — asks, then does everything
 aegisxmemory mcp-config --install --agent hermes --rules   # manual equivalent, one shot
 aegisxmemory mcp-config --install --agent hermes    # Hermes only
-aegisxmemory mcp-config --install                   # Hermes + Claude + Cursor at once
+aegisxmemory mcp-config --install                   # all seven known agents at once
 ```
 
-The `setup` wizard is the friendly front door: it asks *which agent* you use (Hermes / Claude / Cursor / all) and *whether memory should be automatic*, then chains exactly the commands below. Safe to re-run any time.
+Supported `--agent` values: **hermes, claude, cursor, gemini, codex, windsurf, vscode** (or `all`). Agents that read `AGENTS.md` (Codex, Copilot, Gemini CLI, Zed, …) also pick up the rules with `--project-rules`, no config edit needed.
+
+The `setup` wizard is the friendly front door: it asks *which agent* you use (Hermes / Claude / Cursor / Gemini / Codex / Windsurf / VS Code / all) and *whether memory should be automatic*, then chains exactly the commands below. Safe to re-run any time.
 
 The installer:
 

@@ -343,6 +343,14 @@ export function detectMcpRegistrations(homeDir: string = os.homedir(), cwd: stri
     },
     { agent: 'claude', file: path.resolve(cwd, '.mcp.json') }, // Claude Code project-level
     { agent: 'cursor', file: expandHome(path.join(homeDir, '.cursor', 'mcp.json')) },
+    {
+      agent: 'gemini',
+      // GEMINI_CLI_HOME names the CLI's home *directory* (mirrors auto-setup).
+      file: expandHome(process.env['GEMINI_CLI_HOME'] !== undefined && process.env['GEMINI_CLI_HOME'] !== ''
+        ? path.join(process.env['GEMINI_CLI_HOME'], 'settings.json')
+        : path.join(homeDir, '.gemini', 'settings.json')),
+    },
+    { agent: 'windsurf', file: expandHome(path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json')) },
   ];
   for (const loc of jsonLocations) {
     const entry = jsonEntry(loc.file);
@@ -350,17 +358,94 @@ export function detectMcpRegistrations(homeDir: string = os.homedir(), cwd: stri
       out.push(registration(loc.agent, loc.file, entry));
     }
   }
+
+  // VS Code nests its servers under a top-level `servers` key (with a `type`
+  // field), so the plain mcpServers reader cannot see it.
+  const vscodeFile = path.resolve(cwd, '.vscode', 'mcp.json');
+  const vscodeJson = readJsonFile(vscodeFile);
+  if (vscodeJson !== null) {
+    const servers = vscodeJson['servers'];
+    if (servers !== null && typeof servers === 'object' && !Array.isArray(servers)) {
+      const entry = (servers as Record<string, unknown>)['aegisx-memory'];
+      if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
+        const block = entry as Record<string, unknown>;
+        const command = typeof block['command'] === 'string' ? block['command'] : '';
+        const args = Array.isArray(block['args']) ? block['args'].map(String) : [];
+        if (command !== '') {
+          out.push({
+            agent: 'vscode',
+            configPath: vscodeFile,
+            command,
+            args,
+            entryExists: fs.existsSync(selfEntryFor(command, args)),
+            matchesAegisx: args.some(entryLooksLikeAegisx) || entryLooksLikeAegisx(command),
+          });
+        }
+      }
+    }
+  }
+
+  // Codex stores stdio servers as TOML tables in ~/.codex/config.toml.
+  const codexFile = expandHome(process.env['CODEX_HOME'] !== undefined && process.env['CODEX_HOME'] !== ''
+    ? path.join(process.env['CODEX_HOME'], 'config.toml')
+    : path.join(homeDir, '.codex', 'config.toml'));
+  const codexEntry = codexEntryIn(readText2(codexFile));
+  if (codexEntry !== null) {
+    out.push({
+      agent: 'codex',
+      configPath: codexFile,
+      command: codexEntry.command,
+      args: codexEntry.args,
+      entryExists: fs.existsSync(selfEntryFor(codexEntry.command, codexEntry.args)),
+      matchesAegisx: codexEntry.args.some(entryLooksLikeAegisx) || entryLooksLikeAegisx(codexEntry.command),
+    });
+  }
   return out;
 }
 
-function checkMcpRegistrations(): Check[] {
-  const regs = detectMcpRegistrations();
+/** The entry file a registration's command+args point at, best effort. */
+function selfEntryFor(command: string, args: string[]): string {
+  if (command !== 'node' && command !== 'node.exe') return command;
+  const candidate = args.find((a) => a.endsWith('index.js') || a.endsWith('cli.js'));
+  return candidate ?? command;
+}
+
+/** Read text or return null (distinct from readLines, which splits). */
+function readText2(file: string): string | null {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort [mcp_servers.aegisx-memory] extraction from Codex TOML.
+ *  Bounded text scan, not a TOML parse: the entry this tool writes is the
+ *  canonical shape, and the scan must never crash on unrelated TOML. */
+export function codexEntryIn(content: string | null): { command: string; args: string[] } | null {
+  if (content === null) return null;
+  const table = /(^|\n)\s*\[mcp_servers\.(?:"?)aegisx-memory(?:"?)\]\s*(?:\n|$)/.exec(content);
+  if (table === null) return null;
+  const rest = content.slice((table.index ?? 0) + table[0].length);
+  const end = rest.search(/^\s*\[/m); // next table ends the block
+  const block = end === -1 ? rest : rest.slice(0, end);
+  const command = /^\s*command\s*=\s*"([^"]*)"/m.exec(block)?.[1] ?? '';
+  const argsLine = /^\s*args\s*=\s*\[([^\]]*)\]/m.exec(block)?.[1] ?? '';
+  const args = [...argsLine.matchAll(/"([^"]*)"/g)].map((m) => m[1] ?? '').filter((a) => a !== '');
+  if (command === '') return null;
+  return { command, args };
+}
+
+function checkMcpRegistrations(repoAbsPath: string | null): Check[] {
+  // Project-level registrations (.mcp.json, .vscode/mcp.json) belong to the
+  // repo being doctored, not to wherever the CLI happens to run.
+  const regs = detectMcpRegistrations(os.homedir(), repoAbsPath ?? process.cwd());
   if (regs.length === 0) {
     return [
       {
         name: 'mcp registration',
         status: 'warn',
-        detail: 'no AegisX MCP registration found (Hermes/Claude/Cursor)',
+        detail: 'no AegisX MCP registration found in any known agent (hermes, claude, cursor, gemini, codex, windsurf, vscode)',
         fix: 'run `aegisxmemory mcp-config` and paste the block into your agent config',
       },
     ];
@@ -535,7 +620,7 @@ export function runDoctor(dbFile: string, repoAbsPath: string | null, options: D
     checks.push(checkIndexFreshness(dbFile, repoAbsPath));
   }
 
-  checks.push(...checkMcpRegistrations());
+  checks.push(...checkMcpRegistrations(repoAbsPath));
   checks.push(checkHomePermissions(path.dirname(dbFile)));
 
   return {

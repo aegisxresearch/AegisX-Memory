@@ -13,7 +13,7 @@ Setiap sesi baru AI agent menjelajahi ulang repo Anda: arsitektur, keputusan, je
 - 🧠 **Mengingat** — fakta, keputusan, jebakan (gotcha), handoff sesi, struktur kode
 - ⚡ **Cepat** — ~1rb file terindeks dalam <10 detik; re-scan <200 ms
 - 🔒 **Privat** — semuanya tersimpan di `~/.aegisx` di mesin Anda; tanpa koneksi jaringan ke mana pun
-- 🤖 **Ramah-agent** — 5 tool MCP yang bekerja dengan Hermes, Claude, Cursor, atau klien MCP mana pun
+- 🤖 **Ramah-agent** — 5 tool MCP yang bekerja dengan Hermes, Claude, Cursor, Gemini CLI, Codex, Windsurf, VS Code, atau klien MCP mana pun
 - 📊 **Terpantau** — dashboard web lokal dengan knowledge graph interaktif
 
 ## ⚡ TL;DR — install, jalankan `setup`, jawab 2 pertanyaan. Selesai.
@@ -204,10 +204,12 @@ CLI enak untuk Anda, tapi hasil sebenarnya adalah agent yang memanggil tool send
 aegisxmemory setup                                  # wizard terpandu — nanya, lalu mengerjakan semua
 aegisxmemory mcp-config --install --agent hermes --rules   # padanan manualnya, sekali jalan
 aegisxmemory mcp-config --install --agent hermes    # khusus Hermes
-aegisxmemory mcp-config --install                   # Hermes + Claude + Cursor sekaligus
+aegisxmemory mcp-config --install                   # ketujuh agent yang dikenal sekaligus
 ```
 
-Wizard `setup` adalah pintu depan yang ramah: dia bertanya *agent Anda apa* (Hermes / Claude / Cursor / semua) dan *apakah memorinya harus otomatis*, lalu merangkai persis perintah-perintah di bawah. Aman dijalankan ulang kapan saja.
+Nilai `--agent` yang didukung: **hermes, claude, cursor, gemini, codex, windsurf, vscode** (atau `all`). Agent yang membaca `AGENTS.md` (Codex, Copilot, Gemini CLI, Zed, …) juga mengambil aturannya lewat `--project-rules`, tanpa mengedit config apa pun.
+
+Wizard `setup` adalah pintu depan yang ramah: dia bertanya *agent Anda apa* (Hermes / Claude / Cursor / Gemini / Codex / Windsurf / VS Code / semua) dan *apakah memorinya harus otomatis*, lalu merangkai persis perintah-perintah di bawah. Aman dijalankan ulang kapan saja.
 
 Installer-nya:
 

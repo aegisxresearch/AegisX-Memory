@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { AegisxError } from '../core/types.js';
 
-export type McpAgent = 'hermes' | 'claude' | 'cursor';
-export const MCP_AGENTS: readonly McpAgent[] = ['hermes', 'claude', 'cursor'];
+export type McpAgent = 'hermes' | 'claude' | 'cursor' | 'gemini' | 'codex' | 'windsurf' | 'vscode';
+export const MCP_AGENTS: readonly McpAgent[] = ['hermes', 'claude', 'cursor', 'gemini', 'codex', 'windsurf', 'vscode'];
 
 export interface McpServerConfig {
   command: string;
@@ -95,6 +95,42 @@ export function renderCursorJson(cfg: McpServerConfig): string {
   return JSON.stringify(stdioJsonBlock(cfg), null, 2);
 }
 
+/** Gemini CLI: `mcpServers` in ~/.gemini/settings.json (same shape as Claude). */
+export function renderGeminiJson(cfg: McpServerConfig): string {
+  return JSON.stringify(stdioJsonBlock(cfg), null, 2);
+}
+
+/** Windsurf: `mcpServers` in ~/.codeium/windsurf/mcp_config.json (same shape as Claude). */
+export function renderWindsurfJson(cfg: McpServerConfig): string {
+  return JSON.stringify(stdioJsonBlock(cfg), null, 2);
+}
+
+/** VS Code / Copilot: `.vscode/mcp.json` nests under `servers` with `type: "stdio"`. */
+export function renderVscodeJson(cfg: McpServerConfig): string {
+  const block: Record<string, unknown> = { type: 'stdio', command: cfg.command, args: [...cfg.args] };
+  if (Object.keys(cfg.env).length > 0) {
+    block['env'] = { ...cfg.env };
+  }
+  return JSON.stringify({ servers: { 'aegisx-memory': block } }, null, 2);
+}
+
+/** Codex: [mcp_servers.aegisx-memory] table in ~/.codex/config.toml. */
+export function renderCodexToml(cfg: McpServerConfig): string {
+  const q = (value: string): string => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  const lines = [
+    '[mcp_servers.aegisx-memory]',
+    `command = ${q(cfg.command)}`,
+    `args = [${cfg.args.map(q).join(', ')}]`,
+  ];
+  if (Object.keys(cfg.env).length > 0) {
+    lines.push('', '[mcp_servers.aegisx-memory.env]');
+    for (const [key, value] of Object.entries(cfg.env)) {
+      lines.push(`${key} = ${q(value)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 /** Where each agent's block goes — shown as guidance. */
 export function configTarget(agent: McpAgent): string {
   switch (agent) {
@@ -104,6 +140,14 @@ export function configTarget(agent: McpAgent): string {
       return 'claude_desktop_config.json (Desktop) or .mcp.json (Claude Code) → merge the aegisx-memory entry under mcpServers';
     case 'cursor':
       return '~/.cursor/mcp.json (Settings → MCP) → merge the aegisx-memory entry under mcpServers';
+    case 'gemini':
+      return '~/.gemini/settings.json → merge the aegisx-memory entry under mcpServers';
+    case 'codex':
+      return '~/.codex/config.toml → append the [mcp_servers.aegisx-memory] table';
+    case 'windsurf':
+      return '~/.codeium/windsurf/mcp_config.json → merge the aegisx-memory entry under mcpServers';
+    case 'vscode':
+      return '.vscode/mcp.json in the workspace → merge the aegisx-memory entry under servers';
   }
 }
 
@@ -113,6 +157,10 @@ export function renderConfig(agent: string, cfg: McpServerConfig): string {
     ['hermes', () => renderHermesYaml(cfg)],
     ['claude', () => renderClaudeJson(cfg)],
     ['cursor', () => renderCursorJson(cfg)],
+    ['gemini', () => renderGeminiJson(cfg)],
+    ['codex', () => renderCodexToml(cfg)],
+    ['windsurf', () => renderWindsurfJson(cfg)],
+    ['vscode', () => renderVscodeJson(cfg)],
   ]);
   if (agent !== 'all') {
     const render = single.get(agent as McpAgent);
@@ -133,6 +181,18 @@ export function renderConfig(agent: string, cfg: McpServerConfig): string {
     '',
     banner('Cursor'),
     renderCursorJson(cfg),
+    '',
+    banner('Gemini CLI'),
+    renderGeminiJson(cfg),
+    '',
+    banner('Codex CLI'),
+    renderCodexToml(cfg),
+    '',
+    banner('Windsurf'),
+    renderWindsurfJson(cfg),
+    '',
+    banner('VS Code / Copilot'),
+    renderVscodeJson(cfg),
   ].join('\n');
 }
 

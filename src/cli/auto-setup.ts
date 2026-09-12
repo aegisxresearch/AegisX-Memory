@@ -15,8 +15,8 @@ import { isMap, isScalar, isSeq, parse as parseYaml, parseDocument, stringify as
 import type { McpServerConfig } from './mcp-config.js';
 import { AegisxError } from '../core/types.js';
 
-export type SetupAgent = 'hermes' | 'claude' | 'cursor';
-export const SETUP_AGENTS: readonly SetupAgent[] = ['hermes', 'claude', 'cursor'];
+export type SetupAgent = 'hermes' | 'claude' | 'cursor' | 'gemini' | 'codex' | 'windsurf' | 'vscode';
+export const SETUP_AGENTS: readonly SetupAgent[] = ['hermes', 'claude', 'cursor', 'gemini', 'codex', 'windsurf', 'vscode'];
 
 export interface SetupResult {
   agent: SetupAgent;
@@ -67,6 +67,30 @@ export function configPathFor(agent: SetupAgent): string {
       return expand(process.env['CLAUDE_CONFIG'] ?? path.join(os.homedir(), '.claude', 'claude_desktop_config.json'));
     case 'cursor':
       return path.join(os.homedir(), '.cursor', 'mcp.json');
+    case 'gemini':
+      // GEMINI_CLI_HOME points at the CLI's home directory, not the file.
+      return expand(process.env['GEMINI_CLI_HOME'] !== undefined && process.env['GEMINI_CLI_HOME'] !== ''
+        ? path.join(process.env['GEMINI_CLI_HOME'], 'settings.json')
+        : path.join(os.homedir(), '.gemini', 'settings.json'));
+    case 'codex':
+      // CODEX_HOME likewise names the directory holding config.toml.
+      return expand(process.env['CODEX_HOME'] !== undefined && process.env['CODEX_HOME'] !== ''
+        ? path.join(process.env['CODEX_HOME'], 'config.toml')
+        : path.join(os.homedir(), '.codex', 'config.toml'));
+    case 'windsurf':
+      return path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json');
+    case 'vscode':
+      return path.join(process.cwd(), '.vscode', 'mcp.json');
+  }
+}
+
+/** Which installer writes this agent's config. Doctors and tests branch on it. */
+export function agentInstaller(agent: SetupAgent): 'yaml' | 'json' | 'toml' | 'vscode-json' {
+  switch (agent) {
+    case 'hermes': return 'yaml';
+    case 'codex': return 'toml';
+    case 'vscode': return 'vscode-json';
+    default: return 'json';
   }
 }
 
@@ -142,6 +166,10 @@ function installHermes(file: string, cfg: McpServerConfig): SetupResult {
 
 /* ------------------------------------------------------- Claude/Cursor JSON */
 
+/** The plain `mcpServers` mapping used by Claude Desktop, Cursor and Windsurf.
+ *  VS Code is deliberately separate: its file nests the servers under a
+ *  top-level `servers` key and (per its schema) wants `type: "stdio"` on each
+ *  entry — sharing this function would write a file the agent ignores. */
 function installJson(file: string, cfg: McpServerConfig, agent: SetupAgent): SetupResult {
   const existing = readText(file);
   let root: Record<string, unknown> = {};
@@ -177,6 +205,91 @@ function installJson(file: string, cfg: McpServerConfig, agent: SetupAgent): Set
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(root, null, 2)}\n`);
   return { agent, configPath: file, action: existing === null ? 'created' : 'updated', backupPath };
+}
+
+/* ----------------------------------------------------------- VS Code JSON */
+
+/** VS Code (Copilot agent mode): `.vscode/mcp.json` nests servers under a
+ *  top-level `servers` key, and its schema wants `type: "stdio"` on each
+ *  entry — a plain `mcpServers` file is ignored by the Agent Host. */
+function installVscode(file: string, cfg: McpServerConfig): SetupResult {
+  const existing = readText(file);
+  let root: Record<string, unknown> = {};
+  if (existing !== null && existing.trim() !== '') {
+    try {
+      const parsed: unknown = JSON.parse(existing);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object');
+      root = parsed as Record<string, unknown>;
+    } catch (err) {
+      throw new AegisxError(
+        'user',
+        `${file} is not valid JSON; fix it manually before auto-setup: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  const servers = (root['servers'] !== null && typeof root['servers'] === 'object' && !Array.isArray(root['servers'])
+    ? root['servers']
+    : {}) as Record<string, unknown>;
+  const block: Record<string, unknown> = { type: 'stdio', command: cfg.command, args: [...cfg.args] };
+  if (Object.keys(cfg.env).length > 0) {
+    block['env'] = { ...cfg.env };
+  }
+  const before = JSON.stringify(servers);
+  servers['aegisx-memory'] = block;
+  if (JSON.stringify(servers) === before) {
+    return { agent: 'vscode', configPath: file, action: 'unchanged', backupPath: null };
+  }
+  root['servers'] = servers;
+
+  let backupPath: string | null = null;
+  if (existing !== null) backupPath = backup(file, existing);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(root, null, 2)}\n`);
+  return { agent: 'vscode', configPath: file, action: existing === null ? 'created' : 'updated', backupPath };
+}
+
+/* ------------------------------------------------------------- Codex TOML */
+
+/** Escape a TOML basic-string payload (RFC 4180 subset Codex parses). */
+function tomlString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Codex CLI reads `[mcp_servers.<name>]` tables from `~/.codex/config.toml`.
+ * Written with zero dependencies: the block is appended as text, never by
+ * re-serializing the file — every byte outside the appended block is preserved
+ * exactly, which is the safest possible merge for a config this writer cannot
+ * fully parse. Detecting an existing entry is a bounded text scan instead of a
+ * TOML parse: it matches both `[mcp_servers.aegisx-memory]` and the dotted
+ * form, and anything ambiguous is treated as present (never duplicated).
+ */
+function installCodex(file: string, cfg: McpServerConfig): SetupResult {
+  const existing = readText(file);
+  if (existing !== null && /^\s*\[mcp_servers\.(?:"?)aegisx-memory(?:"?)\]\s*$/m.test(existing)) {
+    return { agent: 'codex', configPath: file, action: 'unchanged', backupPath: null };
+  }
+  const lines = [
+    '',
+    '# aegisx-memory: persistent project memory (added by `aegisxmemory setup`)',
+    '[mcp_servers.aegisx-memory]',
+    `command = ${tomlString(cfg.command)}`,
+    `args = [${cfg.args.map(tomlString).join(', ')}]`,
+  ];
+  if (Object.keys(cfg.env).length > 0) {
+    lines.push('', '[mcp_servers.aegisx-memory.env]');
+    for (const [key, value] of Object.entries(cfg.env)) {
+      lines.push(`${key} = ${tomlString(value)}`);
+    }
+  }
+  // A file ending without a newline would glue the first line to the last one.
+  const content = `${existing ?? ''}${existing !== null && !existing.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n`;
+  let backupPath: string | null = null;
+  if (existing !== null) backupPath = backup(file, existing);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+  return { agent: 'codex', configPath: file, action: existing === null ? 'created' : 'updated', backupPath };
 }
 
 /* ------------------------------------------------- behavior rules (auto memory) */
@@ -281,8 +394,10 @@ const SOUL_SEED = [
   '',
 ].join('\n');
 
-/** Default standing-rules file per agent (SOUL.md for Hermes per docs). */
-export function rulesPathFor(agent: SetupAgent): string {
+/** Default standing-rules file per agent (SOUL.md for Hermes per docs).
+ *  Agents without a known instructions file return null: the repo-level
+ *  AGENTS.md (installProjectRules) is their rules carrier instead. */
+export function rulesPathFor(agent: SetupAgent): string | null {
   switch (agent) {
     case 'hermes': {
       const home = process.env['HERMES_HOME'];
@@ -292,6 +407,16 @@ export function rulesPathFor(agent: SetupAgent): string {
       return expand(process.env['CLAUDE_CONFIG_DIR'] ?? path.join(os.homedir(), '.claude', 'CLAUDE.md'));
     case 'cursor':
       return path.join(os.homedir(), '.cursor', 'rules', 'aegisx-memory.mdc');
+    case 'gemini':
+      return expand(process.env['GEMINI_CLI_HOME'] !== undefined && process.env['GEMINI_CLI_HOME'] !== ''
+        ? path.join(process.env['GEMINI_CLI_HOME'], 'GEMINI.md')
+        : path.join(os.homedir(), '.gemini', 'GEMINI.md'));
+    // Codex reads AGENTS.md natively; Windsurf/VS Code have no home-level
+    // instructions file — their contract lives in the repo's AGENTS.md.
+    case 'codex':
+    case 'windsurf':
+    case 'vscode':
+      return null;
   }
 }
 
@@ -303,11 +428,16 @@ function upsertRulesBlock(existing: string | null, block: string): string {
 
 /**
  * Install the auto-memory behavior rules into an agent's standing-instructions
- * file (Hermes SOUL.md, Claude CLAUDE.md, Cursor rules). Idempotent, backed up,
- * and never touches content outside the marker-wrapped block.
+ * file (Hermes SOUL.md, Claude CLAUDE.md, Cursor rules, Gemini GEMINI.md).
+ * Agents without a known file (codex/windsurf/vscode) are a no-op — their
+ * contract travels via the repo's AGENTS.md. Idempotent, backed up, and never
+ * touches content outside the marker-wrapped block.
  */
 export function installRulesForAgent(agent: SetupAgent, options: RawOptions = {}): RulesResult {
   const file = options.rulesPath ?? rulesPathFor(agent);
+  if (file === null) {
+    return { agent, path: '(repo AGENTS.md via --project-rules)', action: 'unchanged', backupPath: null };
+  }
   const existing = readText(file);
   let content: string;
   if (existing === null) {
@@ -397,7 +527,16 @@ export function describeProjectRulesResult(r: ProjectRulesResult): string {
 export function installForAgent(agent: SetupAgent, options: RawOptions = {}): SetupResult {
   const cfg = options.config ?? { command: 'node', args: [], env: {} };
   const file = options.configPath ?? configPathFor(agent);
-  return agent === 'hermes' ? installHermes(file, cfg) : installJson(file, cfg, agent);
+  switch (agentInstaller(agent)) {
+    case 'yaml':
+      return installHermes(file, cfg);
+    case 'toml':
+      return installCodex(file, cfg);
+    case 'vscode-json':
+      return installVscode(file, cfg);
+    default:
+      return installJson(file, cfg, agent);
+  }
 }
 
 /** Human-readable summary line per agent, for the CLI. */
