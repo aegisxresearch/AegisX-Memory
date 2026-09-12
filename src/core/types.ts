@@ -25,6 +25,17 @@ export interface MemoryFact {
   value: string;
   repoHint: string | null;
   updatedAt: string;
+  /** Value this key held before it was last re-pinned (absent on first set). */
+  previousValue?: string;
+}
+
+/** One superseded value of a fact key — the timeline `recall` and `history` show. */
+export interface FactHistoryEntry {
+  key: string;
+  value: string;
+  repoHint: string | null;
+  /** When this value stopped being the current one. */
+  replacedAt: string;
 }
 
 export interface SymbolRecord {

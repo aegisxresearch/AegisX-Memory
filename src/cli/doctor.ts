@@ -138,7 +138,7 @@ export function checkDatabase(dbFile: string): Check[] {
         },
   );
 
-  const coreTables = ['facts', 'knowledge', 'sessions', 'files', 'symbols', 'meta'];
+  const coreTables = ['facts', 'fact_history', 'knowledge', 'sessions', 'files', 'symbols', 'meta'];
   const missing = coreTables.filter((t) => !tables.includes(t));
   checks.push(
     tables.length === 0          ? { name: 'schema', status: 'warn', detail: 'database is empty (no tables)', fix: 'run `aegisxmemory init`' }

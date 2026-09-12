@@ -123,4 +123,28 @@ suite('mcp stdio — allowlist denial over the wire', () => {
     expect(recall.content[0]?.text).toContain('AEGISX-MEMORY:BEGIN');
     expect(recall.content[0]?.text).toContain('stdio integration works');
   });
+
+  it('happy: re-pinning a fact tells the agent which value it replaced', async () => {
+    client = await connectServer();
+    const first = (await client.callTool({
+      name: 'aegisxmemory_remember',
+      arguments: { key: 'project.a.dev-port', value: '3000' },
+    })) as ToolResult;
+    expect(first.content[0]?.text).toBe('saved project.a.dev-port');
+
+    const second = (await client.callTool({
+      name: 'aegisxmemory_remember',
+      arguments: { key: 'project.a.dev-port', value: '5000' },
+    })) as ToolResult;
+    expect(second.content[0]?.text).toContain('replaced previous value: 3000');
+
+    // The same signal must reach the context block the agent reads next session.
+    const recall = (await client.callTool({
+      name: 'aegisxmemory_recall',
+      arguments: { repo: repoA },
+    })) as ToolResult;
+    expect(recall.content[0]?.text).toContain(
+      '- [project.a.dev-port] 5000 — was: 3000 (changed ',
+    );
+  });
 });

@@ -88,7 +88,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'aegisxmemory_recall',
-    'Get budgeted project memory: facts, decisions/gotchas, relevant symbols, and the last session handoff. Use at session start instead of re-reading the codebase.',
+    'Get budgeted project memory: facts, decisions/gotchas, relevant symbols, and the last session handoff. Facts include previousValue when a key was re-pinned. Use at session start instead of re-reading the codebase.',
     {
       query: z.string().optional().describe('optional search query; omit for repo-scoped recall'),
       repo: z.string().optional().describe('repo root path; defaults to the server cwd'),
@@ -106,7 +106,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'aegisxmemory_remember',
-    'Save a stable fact under a dot-namespaced key, e.g. key "project.myapp.test-cmd" value "npm test". Refuses secrets.',
+    'Save a stable fact under a dot-namespaced key, e.g. key "project.myapp.test-cmd" value "npm test". Re-pinning a key with a new value keeps the old one, which recall reports inline. Refuses secrets.',
     {
       key: z.string().describe('dot-namespaced key: lowercase letters, digits, dot, underscore, hyphen'),
       value: z.string().describe('the fact — kept concise preferred; values over 2000 chars are truncated, never rejected'),
@@ -114,7 +114,13 @@ export function buildMcpServer(): McpServer {
     async ({ key, value }) => {
       try {
         const fact = engine.remember(key, value, process.cwd());
-        return { content: [{ type: 'text' as const, text: `saved ${fact.key}` }] };
+        const previous = fact.previousValue;
+        // Report the replacement so a session cannot unknowingly act on a stale
+        // assumption about what a key used to hold.
+        const note = previous === undefined
+          ? ''
+          : ` — replaced previous value: ${previous.length > 120 ? `${previous.slice(0, 120)}…` : previous}`;
+        return { content: [{ type: 'text' as const, text: `saved ${fact.key}${note}` }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `error: ${errorMessage(err)}` }], isError: true };
       }

@@ -57,6 +57,12 @@ function writeJson(payload: object, jsonMode: boolean, fallback: () => void): vo
   }
 }
 
+/** One-line preview for terminal messages (the store and --json keep it whole). */
+function preview(text: string, max = 60): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
 /** Commander's own arg-parse errors map to user errors (exit 1). */
 class CommanderUserError extends Error {}
 
@@ -200,7 +206,11 @@ program
         writeJson(
           { ok: true, fact },
           opts.json,
-          () => process.stdout.write(`saved ${key}\n`),
+          () => process.stdout.write(
+            fact.previousValue === undefined
+              ? `saved ${key}\n`
+              : `saved ${key} (was: ${preview(fact.previousValue)})\n`,
+          ),
         );
       } finally {
         engine.close();
@@ -226,6 +236,55 @@ program
         opts.json,
         () => process.stdout.write(`deleted ${key}\n`),
       );
+    });
+  });
+
+program
+  .command('history')
+  .description('show what a pinned fact used to be (omit <key> for recent changes across all facts)')
+  .argument('[key]')
+  .option('--json', 'machine-readable output', false)
+  .action((key: string | undefined, opts: { json: boolean }) => {
+    run(() => {
+      const engine = openEngine();
+      try {
+        if (key === undefined) {
+          const changes = engine.recentHistory(20);
+          writeJson({ ok: true, changes }, opts.json, () => {
+            if (changes.length === 0) {
+              process.stdout.write('no fact has changed value yet\n');
+              return;
+            }
+            process.stdout.write(`recent fact changes (${changes.length}):\n`);
+            for (const entry of changes) {
+              process.stdout.write(
+                `  ${entry.key} = ${preview(entry.value)}   until ${entry.replacedAt.slice(0, 10)}\n`,
+              );
+            }
+          });
+          return;
+        }
+        const fact = engine.fact(key);
+        const history = engine.history(key);
+        if (fact === undefined && history.length === 0) {
+          throw new AegisxError('user', `no fact or history for key "${key}"`);
+        }
+        writeJson({ ok: true, key, fact: fact ?? null, history }, opts.json, () => {
+          process.stdout.write(`${key}\n`);
+          if (fact !== undefined) {
+            process.stdout.write(
+              `  current  ${preview(fact.value)}   (since ${fact.updatedAt.slice(0, 10)})\n`,
+            );
+          }
+          for (const entry of history) {
+            process.stdout.write(
+              `  was      ${preview(entry.value)}   (until ${entry.replacedAt.slice(0, 10)})\n`,
+            );
+          }
+        });
+      } finally {
+        engine.close();
+      }
     });
   });
 

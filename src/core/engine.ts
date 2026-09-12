@@ -12,7 +12,7 @@ import { normalizeRepoPath, parseAllowedRepos, assertRepoAllowed } from './paths
 import { Store, ftsEscape } from './store.js';
 import { Indexer, isSecretBearingFile } from '../indexer/indexer.js';
 import { containsSecret } from './secrets.js';
-import { AegisxError, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats } from './types.js';
+import { AegisxError, type FactHistoryEntry, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats } from './types.js';
 
 export const DEFAULT_TOKEN_BUDGET = 2_000;
 const CHARS_PER_TOKEN = 4; // rough estimator, deliberately conservative
@@ -83,6 +83,21 @@ export class Engine {
 
   forget(key: string): boolean {
     return this.store.forgetFact(key);
+  }
+
+  /** One fact by key, carrying its previous value when it has been re-pinned. */
+  fact(key: string): MemoryFact | undefined {
+    return this.store.getFact(key);
+  }
+
+  /** Superseded values of one fact key, newest first. */
+  history(key: string, limit?: number): FactHistoryEntry[] {
+    return this.store.factHistory(key, limit);
+  }
+
+  /** Superseded values across every key, newest first. */
+  recentHistory(limit?: number): FactHistoryEntry[] {
+    return this.store.recentFactHistory(limit);
   }
 
   saveSession(
@@ -377,7 +392,12 @@ export class Engine {
     if (result.facts.length > 0) {
       parts.push('## Facts');
       for (const f of result.facts) {
-        parts.push(`- [${f.key}] ${f.value}`);
+        // Flag a superseded value inline: an agent shown only the new value may
+        // "fix" something that was changed deliberately last session.
+        const was = f.previousValue === undefined
+          ? ''
+          : ` — was: ${f.previousValue} (changed ${f.updatedAt.slice(0, 10)})`;
+        parts.push(`- [${f.key}] ${f.value}${was}`);
       }
     }
     if (result.symbols.length > 0) {

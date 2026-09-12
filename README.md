@@ -321,6 +321,7 @@ aegisxmemory forget project.myapp.old-thing    # delete a fact
 | Start of every session | `aegisxmemory resume` / *"recall the project memory"* |
 | Learned something stable | `aegisxmemory remember project.<name>.<key> <value>` |
 | End of session | `aegisxmemory save --json -` / *"save the session handoff"* |
+| Wondering what a fact used to say | `aegisxmemory history <key>` |
 | Want it hands-off | `aegisxmemory watch .` in a side terminal |
 | Something feels off | `aegisxmemory doctor` |
 | Curious about usage | `aegisxmemory stats` or `aegisxmemory dashboard` |
@@ -351,7 +352,8 @@ The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose i
 | `aegisxmemory index [path]` | full/incremental hash scan of a repo |
 | `aegisxmemory recall [query] [--budget n]` | budgeted context block (markdown) |
 | `aegisxmemory remember <key> <value>` | pin a stable fact |
-| `aegisxmemory forget <key>` | delete a fact |
+| `aegisxmemory forget <key>` | delete a fact (and its superseded values) |
+| `aegisxmemory history [key]` | what a pinned fact used to be (timeline of superseded values) |
 | `aegisxmemory save --json <file\|->` | persist a session handoff (JSON file or stdin) |
 | `aegisxmemory resume` | print last handoff + memory for this repo |
 | `aegisxmemory stats [path] [--json]` | observability: files/symbols, scans, recalls, hit rate, tokens saved |
@@ -392,13 +394,21 @@ aegisxmemory recall --json | jq .    # machine mode
 </details>
 
 <details>
-<summary><code>remember / forget</code> — pin and unpin facts</summary>
+<summary><code>remember / forget / history</code> — pin, unpin and trace facts</summary>
 
 ```bash
 aegisxmemory remember project.myapp.test-cmd "npm test"
 aegisxmemory remember project.myapp.stack "TypeScript + SQLite"
 aegisxmemory remember project.myapp.dev-port "3000"
-aegisxmemory forget project.myapp.dev-port
+aegisxmemory remember project.myapp.dev-port "5000"   # keeps 3000 as history
+
+aegisxmemory history project.myapp.dev-port          # current value + what it was
+# project.myapp.dev-port
+#   current  5000   (since 2026-09-12)
+#   was      3000   (until 2026-09-12)
+
+aegisxmemory history                                  # every recent change, all keys
+aegisxmemory forget project.myapp.dev-port            # removes the history too
 ```
 
 Keys: lowercase letters, digits, dot, underscore, hyphen (max 128 chars). Values: over 2,000 chars are truncated (never rejected); secret-shaped values are refused. See [§10](#10-facts-naming-limits-examples).
@@ -449,6 +459,13 @@ project.<project-name>.<key>
 - key: `/^[a-z0-9][a-z0-9._-]{0,127}$/` — lowercase letters, digits, dot, underscore, hyphen; max 128 chars
 - value: over 2,000 chars are truncated, never rejected — a failed `remember` burns an agent turn; a shortened fact does not. Keep facts concise anyway (≤500 chars is the sweet spot)
 - secrets are refused: token prefixes (`sk-`, `ghp_`, `AKIA…`, …), `user:pass@host` URLs, `password=…`-style assignments — one shared detector (`src/core/secrets.ts`) powers every write path
+- **history:** re-pinning a key with a *different* value keeps the old one (newest 10 per key). Recall then shows it inline so nobody acts on a stale value:
+
+  ```
+  - [project.myapp.dev-port] 5000 — was: 3000 (changed 2026-09-12)
+  ```
+
+  Re-pinning the *same* value is not a change and is not recorded (agents repeat themselves every session). `aegisxmemory history [key]` prints the timeline, and `forget` purges it — a deleted fact leaves nothing behind.
 
 ## 11. Session handoffs: the JSON contract
 

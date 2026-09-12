@@ -64,7 +64,7 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'aegisxmemory_recall',
-    'Get budgeted project memory: facts, decisions/gotchas, relevant symbols, and the last session handoff. Use at session start instead of re-reading the codebase.',
+    'Get budgeted project memory: facts, decisions/gotchas, relevant symbols, and the last session handoff. Facts include previousValue when a key was re-pinned. Use at session start instead of re-reading the codebase.',
     {
       query: z.string().optional().describe('optional search query; omit for repo-scoped recall'),
       repo: z.string().optional().describe('repo root path; defaults to the server cwd'),
@@ -82,15 +82,21 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'aegisxmemory_remember',
-    'Save a stable fact under a dot-namespaced key, e.g. key "project.myapp.test-cmd" value "npm test". Refuses secrets.',
+    'Save a stable fact under a dot-namespaced key, e.g. key "project.myapp.test-cmd" value "npm test". Re-pinning a key with a new value keeps the old one, which recall reports inline. Refuses secrets.',
     {
       key: z.string().describe('dot-namespaced key: lowercase letters, digits, dot, underscore, hyphen'),
       value: z.string().describe('the fact — kept concise preferred; values over 2000 chars are truncated, never rejected'),
     },
     async ({ key, value }) => {
       try {
-        engine.remember(key, value, process.cwd());
-        return textResult(`saved ${key}`);
+        const fact = engine.remember(key, value, process.cwd());
+        const previous = fact.previousValue;
+        // Tell the agent the value changed — a silently overwritten fact is how
+        // a session ends up acting on a stale assumption.
+        const note = previous === undefined
+          ? ''
+          : ` — replaced previous value: ${previous.length > 120 ? `${previous.slice(0, 120)}…` : previous}`;
+        return textResult(`saved ${key}${note}`);
       } catch (err) {
         return textResult(`error: ${errorMessage(err)}`, true);
       }

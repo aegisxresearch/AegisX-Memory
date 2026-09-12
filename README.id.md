@@ -321,6 +321,7 @@ aegisxmemory forget project.myapp.halus-lama    # hapus sebuah fakta
 | Awal setiap sesi | `aegisxmemory resume` / *"recall the project memory"* |
 | Menemukan sesuatu yang stabil | `aegisxmemory remember project.<nama>.<key> <value>` |
 | Akhir sesi | `aegisxmemory save --json -` / *"save the session handoff"* |
+| Ingin tahu nilai lama sebuah fakta | `aegisxmemory history <key>` |
 | Mau serahin ke otomatis | `aegisxmemory watch .` di terminal samping |
 | Ada yang terasa aneh | `aegisxmemory doctor` |
 | Penasaran pemakaian | `aegisxmemory stats` atau `aegisxmemory dashboard` |
@@ -351,7 +352,8 @@ Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membuka
 | `aegisxmemory index [path]` | scan hash penuh/inkremental atas sebuah repo |
 | `aegisxmemory recall [query] [--budget n]` | blok konteks beranggaran (markdown) |
 | `aegisxmemory remember <key> <value>` | pin fakta stabil |
-| `aegisxmemory forget <key>` | hapus fakta |
+| `aegisxmemory forget <key>` | hapus fakta (beserta nilai-nilai lamanya) |
+| `aegisxmemory history [key]` | nilai lama sebuah fakta (linimasa nilai yang sudah digantikan) |
 | `aegisxmemory save --json <file\|->` | simpan handoff sesi (file JSON atau stdin) |
 | `aegisxmemory resume` | cetak handoff terakhir + memori repo ini |
 | `aegisxmemory stats [path] [--json]` | observability: file/simbol, scan, recall, hit rate, token hemat |
@@ -392,13 +394,21 @@ aegisxmemory recall --json | jq .    # mode mesin
 </details>
 
 <details>
-<summary><code>remember / forget</code> — pin dan lepas fakta</summary>
+<summary><code>remember / forget / history</code> — pin, lepas, dan lacak fakta</summary>
 
 ```bash
 aegisxmemory remember project.myapp.test-cmd "npm test"
 aegisxmemory remember project.myapp.stack "TypeScript + SQLite"
 aegisxmemory remember project.myapp.dev-port "3000"
-aegisxmemory forget project.myapp.dev-port
+aegisxmemory remember project.myapp.dev-port "5000"   # 3000 disimpan sebagai riwayat
+
+aegisxmemory history project.myapp.dev-port          # nilai sekarang + nilai sebelumnya
+# project.myapp.dev-port
+#   current  5000   (since 2026-09-12)
+#   was      3000   (until 2026-09-12)
+
+aegisxmemory history                                  # semua perubahan terbaru, semua key
+aegisxmemory forget project.myapp.dev-port            # riwayatnya ikut terhapus
 ```
 
 Key: huruf kecil, angka, titik, underscore, tanda hubung (maks 128 karakter). Value: lebih dari 2.000 karakter dipotong (tidak pernah ditolak); value berbentuk secret ditolak. Lihat [§10](#10-fakta-penamaan-batasan-contoh).
@@ -449,6 +459,13 @@ project.<nama-project>.<key>
 - key: `/^[a-z0-9][a-z0-9._-]{0,127}$/` — huruf kecil, angka, titik, underscore, tanda hubung; maksimal 128 karakter
 - value: lebih dari 2.000 karakter dipotong, tidak pernah ditolak — `remember` yang gagal membakar satu giliran agent; fakta yang sedikit dipendekkan tidak. Tetap tulis fakta secukupnya (≤500 karakter adalah titik manisnya)
 - secret ditolak: prefix token (`sk-`, `ghp_`, `AKIA…`, …), URL `user:pass@host`, assignment berpola `password=…` — satu detector bersama (`src/core/secrets.ts`) dipakai semua jalur tulis
+- **riwayat:** menulis ulang sebuah key dengan value yang *berbeda* menyimpan value lamanya (10 terbaru per key). Recall lalu menampilkannya langsung supaya tidak ada yang bekerja di atas nilai basi:
+
+  ```
+  - [project.myapp.dev-port] 5000 — was: 3000 (changed 2026-09-12)
+  ```
+
+  Menulis ulang value yang *sama* bukan perubahan dan tidak dicatat (agent mengulang fakta yang sama tiap sesi). `aegisxmemory history [key]` mencetak linimasanya, dan `forget` menghapus riwayatnya — fakta yang dihapus tidak menyisakan apa pun.
 
 ## 11. Session handoff: kontrak JSON
 

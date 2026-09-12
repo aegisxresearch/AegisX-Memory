@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   AegisxError,
+  type FactHistoryEntry,
   type KnowledgeKind,
   type KnowledgeRecord,
   type MemoryFact,
@@ -25,9 +26,32 @@ export const KNOWLEDGE_TITLE_MAX = 200;
 export const KNOWLEDGE_BODY_MAX = 4_000;
 export const HANDOFF_STRING_MAX = 1_000;
 export const HANDOFF_ARRAY_MAX = 20;
+/** Superseded values kept per fact key — enough to see a trend, bounded forever. */
+export const FACT_HISTORY_MAX = 10;
 /** Telemetry retention window (ISO timestamps compare lexicographically). */
 export const TELEMETRY_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+
+/** Row shape shared by every fact read that decorates in the previous value. */
+interface FactRow {
+  key: string;
+  value: string;
+  repo_hint: string | null;
+  updated_at: string;
+  previous_value?: string | null;
+}
+
+/** Row shape of the fact_history table. */
+interface HistoryRow {
+  key: string;
+  value: string;
+  repo_hint: string | null;
+  replaced_at: string;
+}
+
+/** Most recent superseded value for a key — the only history recall needs. */
+const PREVIOUS_VALUE_SQL = `(SELECT h.value FROM fact_history h
+   WHERE h.key = f.key ORDER BY h.replaced_at DESC, h.id DESC LIMIT 1)`;
 
 export class Store {
   private readonly db: DatabaseType;
@@ -106,6 +130,15 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_sessions_repo ON sessions(repo, created_at DESC);
 
+      CREATE TABLE IF NOT EXISTS fact_history (
+        id INTEGER PRIMARY KEY,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        repo_hint TEXT,
+        replaced_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_fact_history_key ON fact_history(key, replaced_at DESC);
+
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -181,40 +214,110 @@ export class Store {
     return trimmed;
   }
 
+  private toFact(row: FactRow): MemoryFact {
+    const fact: MemoryFact = {
+      key: row.key,
+      value: row.value,
+      repoHint: row.repo_hint,
+      updatedAt: row.updated_at,
+    };
+    if (row.previous_value !== null && row.previous_value !== undefined) {
+      fact.previousValue = row.previous_value;
+    }
+    return fact;
+  }
+
   rememberFact(key: string, value: string, repoHint: string | null): MemoryFact {
     this.validateKey(key);
     const clean = this.validateValue(value);
     const now = new Date().toISOString();
+    const existing = this.prepared('SELECT value FROM facts WHERE key = ?').get(key) as
+      | { value: string }
+      | undefined;
+    // Only a real value change becomes history: agents re-pin the same fact every
+    // session, and that repetition must not fill the timeline with noise.
+    const superseded = existing !== undefined && existing.value !== clean ? existing.value : null;
+    if (superseded !== null) {
+      this.prepared(
+        'INSERT INTO fact_history (key, value, repo_hint, replaced_at) VALUES (?, ?, ?, ?)',
+      ).run(key, superseded, repoHint, now);
+      this.trimFactHistory(key);
+    }
     this.prepared(
       `INSERT INTO facts (key, value, repo_hint, updated_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value,
          repo_hint = excluded.repo_hint, updated_at = excluded.updated_at`,
     ).run(key, clean, repoHint, now);
-    return { key, value: clean, repoHint, updatedAt: now };
+    const fact: MemoryFact = { key, value: clean, repoHint, updatedAt: now };
+    if (superseded !== null) {
+      fact.previousValue = superseded;
+    }
+    return fact;
+  }
+
+  /** Keep only the newest FACT_HISTORY_MAX superseded values for a key. */
+  private trimFactHistory(key: string): void {
+    this.prepared(
+      `DELETE FROM fact_history WHERE key = ? AND id NOT IN (
+         SELECT id FROM fact_history WHERE key = ?
+         ORDER BY replaced_at DESC, id DESC LIMIT ?
+       )`,
+    ).run(key, key, FACT_HISTORY_MAX);
+  }
+
+  /** Superseded values of one key, newest first. */
+  factHistory(key: string, limit = FACT_HISTORY_MAX): FactHistoryEntry[] {
+    this.validateKey(key);
+    return this.mapHistory(
+      this.prepared(
+        `SELECT key, value, repo_hint, replaced_at FROM fact_history
+         WHERE key = ? ORDER BY replaced_at DESC, id DESC LIMIT ?`,
+      ).all(key, limit) as HistoryRow[],
+    );
+  }
+
+  /** Superseded values across every key, newest first (a bare `history`). */
+  recentFactHistory(limit = 20): FactHistoryEntry[] {
+    return this.mapHistory(
+      this.prepared(
+        `SELECT key, value, repo_hint, replaced_at FROM fact_history
+         ORDER BY replaced_at DESC, id DESC LIMIT ?`,
+      ).all(limit) as HistoryRow[],
+    );
+  }
+
+  private mapHistory(rows: HistoryRow[]): FactHistoryEntry[] {
+    return rows.map((row) => ({
+      key: row.key,
+      value: row.value,
+      repoHint: row.repo_hint,
+      replacedAt: row.replaced_at,
+    }));
   }
 
   forgetFact(key: string): boolean {
     this.validateKey(key);
     const res: RunResult = this.prepared('DELETE FROM facts WHERE key = ?').run(key);
-    return res.changes > 0;
+    // Forget means forget: superseded values of a removed key go with it, so a
+    // deleted credential-shaped fact cannot survive in the history table.
+    const history: RunResult = this.prepared('DELETE FROM fact_history WHERE key = ?').run(key);
+    return res.changes > 0 || history.changes > 0;
   }
 
   getFact(key: string): MemoryFact | undefined {
-    const row = this.prepared('SELECT key, value, repo_hint, updated_at FROM facts WHERE key = ?').get(
-      key,
-    ) as { key: string; value: string; repo_hint: string | null; updated_at: string } | undefined;
-    if (row === undefined) {
-      return undefined;
-    }
-    return { key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at };
+    const row = this.prepared(
+      `SELECT f.key, f.value, f.repo_hint, f.updated_at, ${PREVIOUS_VALUE_SQL} AS previous_value
+       FROM facts f WHERE f.key = ?`,
+    ).get(key) as FactRow | undefined;
+    return row === undefined ? undefined : this.toFact(row);
   }
 
   factsForRepo(repo: string, limit = 20): MemoryFact[] {
     const rows = this.prepared(
-      `SELECT key, value, repo_hint, updated_at FROM facts
-       WHERE repo_hint = ? ORDER BY updated_at DESC LIMIT ?`,
-    ).all(repo, limit) as Array<{ key: string; value: string; repo_hint: string | null; updated_at: string }>;
-    return rows.map((row) => ({ key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at }));
+      `SELECT f.key, f.value, f.repo_hint, f.updated_at, ${PREVIOUS_VALUE_SQL} AS previous_value
+       FROM facts f WHERE f.repo_hint = ? ORDER BY f.updated_at DESC LIMIT ?`,
+    ).all(repo, limit) as FactRow[];
+    return rows.map((row) => this.toFact(row));
   }
 
   searchFacts(query: string, limit = 10): MemoryFact[] {
@@ -223,11 +326,11 @@ export class Store {
       return [];
     }
     const rows = this.prepared(
-      `SELECT f.key, f.value, f.repo_hint, f.updated_at
+      `SELECT f.key, f.value, f.repo_hint, f.updated_at, ${PREVIOUS_VALUE_SQL} AS previous_value
        FROM facts_fts fts JOIN facts f ON f.id = fts.rowid
        WHERE facts_fts MATCH ? ORDER BY rank LIMIT ?`,
-    ).all(ftsQuery, limit) as Array<{ key: string; value: string; repo_hint: string | null; updated_at: string }>;
-    return rows.map((row) => ({ key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at }));
+    ).all(ftsQuery, limit) as FactRow[];
+    return rows.map((row) => this.toFact(row));
   }
 
   countFacts(): number {
