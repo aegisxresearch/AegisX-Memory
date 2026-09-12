@@ -92,7 +92,7 @@ Three stores under one SQLite database (`~/.aegisx/memory.sqlite`, WAL + FTS5):
 
 **Hash invalidation, not timestamps.** Code knowledge is keyed to SHA-256 file-content hashes. The moment a file changes, its stale memories are gone. Zero stale answers, zero heuristics.
 
-**Budgeted recall.** A recall composes, under a hard token budget (default 2,000): this repo's facts → this repo's decisions, gotchas and conventions → symbols → last handoff → structure brief. Give it a query and the knowledge and symbol layers become FTS-ranked instead of anchored; without a query nothing from other repos can be pulled in. Overflow drops lowest-priority items first — never mid-fact.
+**Budgeted recall.** A recall composes, under a hard token budget (default 2,000): this repo's facts → this repo's decisions, gotchas and conventions → symbols → last handoff → structure brief. Give it a query and the knowledge and symbol layers become FTS-ranked instead of anchored; without a query nothing from other repos can be pulled in. Overflow drops lowest-priority items first — never mid-fact. A note the last handoff already reprints is served once, from that handoff — never twice.
 
 ## 3. Installation
 
@@ -652,7 +652,7 @@ CLI / MCP ──► Engine ──► FactStore ─┐
 - **Indexer** (`src/indexer/`) — hash-diff repository walk; extracts symbols/TODOs with per-language extractors. Recognised declarations: JS/TS, Python, Ruby (`def`), Go (`func`, `type`), Rust (`fn`, `mod`, `struct`, `impl`, `trait`), Java, C#, Kotlin (`class`, `interface`, `enum`, `record`, `object`, `namespace`, `union`) and C/C++ return-type functions (`int main(`, `std::string name(`) — column-0 declarations only, so indented members stay out of the index.
 - **Secrets** (`src/core/secrets.ts`) — the single secret detector used by every write path.
 
-Recall composition, under a hard token budget: repo-anchored facts → repo-anchored knowledge (FTS-ranked, and repo-scoped, when the recall carries a query) → symbols (ranked by query, deterministic top-list otherwise) → last handoff → structure brief. A query-less recall is anchored end to end and never searches another repo's facts. Overflow drops lowest-priority items first — never mid-fact.
+Recall composition, under a hard token budget: repo-anchored facts → repo-anchored knowledge (FTS-ranked, and repo-scoped, when the recall carries a query) → symbols (ranked by query, deterministic top-list otherwise) → last handoff → structure brief. A query-less recall is anchored end to end and never searches another repo's facts. Notes the last handoff already reprints are dropped from the knowledge layer, so a sentence is printed once — from the handoff while it is the latest, from the knowledge store after a later handoff takes the slot. Overflow drops lowest-priority items first — never mid-fact.
 
 ## 20. Roadmap
 

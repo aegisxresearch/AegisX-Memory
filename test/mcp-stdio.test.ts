@@ -165,6 +165,21 @@ suite('mcp stdio — allowlist denial over the wire', () => {
     expect(saved.content[0]?.text).toContain('session handoff saved');
     expect(saved.content[0]?.text).toContain('1 note recorded');
 
+    // This handoff reprints its own decision, so it is printed once — under the
+    // handoff heading, not also in the notes block.
+    const firstRecall = (await client.callTool({
+      name: 'aegisxmemory_recall',
+      arguments: { repo: repoA },
+    })) as ToolResult;
+    expect(firstRecall.content[0]?.text).toContain('Decisions:\n- pin the dev server to port 5000');
+    expect(firstRecall.content[0]?.text).not.toContain('- (decision) pin the dev server to port 5000');
+
+    // A later handoff takes over the "last session" slot; the same decision is
+    // then served from the knowledge store instead of being reprinted.
+    await client.callTool({
+      name: 'aegisxmemory_save',
+      arguments: { goal: 'moved on', facts: [], decisions: [], nextSteps: [] },
+    });
     const recall = (await client.callTool({
       name: 'aegisxmemory_recall',
       arguments: { repo: repoA },
@@ -189,6 +204,23 @@ suite('mcp stdio — allowlist denial over the wire', () => {
     expect(saved.isError).toBeUndefined();
     expect(saved.content[0]?.text).toContain('2 notes recorded');
 
+    // This handoff reprints them, so they are printed once — under the handoff
+    // headings, not also in the notes block.
+    const firstRecall = (await client.callTool({
+      name: 'aegisxmemory_recall',
+      arguments: { repo: repoA },
+    })) as ToolResult;
+    const firstText = firstRecall.content[0]?.text ?? '';
+    expect(firstText).toContain('Gotchas:\n- sqlite locking needs a busy timeout');
+    expect(firstText).toContain('Conventions:\n- four spaces in TypeScript');
+    expect(firstText).not.toContain('- (gotcha) sqlite locking needs a busy timeout');
+
+    // A later handoff takes over the "last session" slot; both kinds are then
+    // served from the knowledge store under their own labels.
+    await client.callTool({
+      name: 'aegisxmemory_save',
+      arguments: { goal: 'moved on', facts: [], decisions: [], nextSteps: [] },
+    });
     const recall = (await client.callTool({
       name: 'aegisxmemory_recall',
       arguments: { repo: repoA },
@@ -196,8 +228,5 @@ suite('mcp stdio — allowlist denial over the wire', () => {
     const text = recall.content[0]?.text ?? '';
     expect(text).toContain('- (gotcha) sqlite locking needs a busy timeout');
     expect(text).toContain('- (convention) four spaces in TypeScript');
-    // and the last handoff prints them under their own headings
-    expect(text).toContain('Gotchas:\n- sqlite locking needs a busy timeout');
-    expect(text).toContain('Conventions:\n- four spaces in TypeScript');
   });
 });

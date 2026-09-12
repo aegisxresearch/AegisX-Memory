@@ -196,6 +196,7 @@ describe('knowledge — the save path records handoff notes', () => {
       expect(row?.title.endsWith('\u2026')).toBe(true);
       expect(row?.body).toBe(long);
       // the truncated-away tail stays searchable through the body
+      engine.saveSession(repo, handoff('moved on', ['unrelated follow-up']));
       expect(engine.recall('ENDMARKERQZX', repo).knowledge).toHaveLength(1);
     } finally {
       engine.close();
@@ -215,22 +216,67 @@ describe('knowledge — the save path records handoff notes', () => {
     }
   });
 
-  it('recall shows a handoff-derived decision once, without echoing title and body', () => {
+  it('prints a note once when the last handoff already carries it', () => {
     const sentence = 'pin the CI runner to ubuntu-22.04 until the ARM image lands';
     const engine = new Engine(dbFile);
     try {
       engine.saveSession(repo, handoff('ci', [sentence]));
       const markdown = engine.renderMarkdown(engine.recall('ci runner', repo));
 
+      // the handoff is the newer copy of the same sentence, so it is the one kept
+      expect(markdown).toContain(`Decisions:\n- ${sentence}`);
+      expect(markdown).not.toContain('## Decisions, gotchas & conventions');
+      expect(countOccurrences(markdown, sentence)).toBe(1);
+      expect(engine.recall('ci runner', repo).knowledge.map((k) => k.title)).not.toContain(sentence);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('shows a note from the knowledge store once a later handoff supersedes it', () => {
+    const sentence = 'pin the CI runner to ubuntu-22.04 until the ARM image lands';
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, handoff('ci', [sentence]));
+      engine.saveSession(repo, handoff('moved on', ['unrelated follow-up']));
+
+      const markdown = engine.renderMarkdown(engine.recall('ci runner', repo));
       expect(markdown).toContain('## Decisions, gotchas & conventions');
       expect(markdown).toContain(`- (decision) ${sentence}`);
       // the title/body form would print the same sentence twice within the line
       expect(markdown).not.toContain('- (decision) **');
+      expect(countOccurrences(markdown, sentence)).toBe(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('dedupes a note whose title had to be truncated', () => {
+    const long = `${'refactor the billing pipeline '.repeat(12)}ENDMARKERQZX`;
+    expect(long.length).toBeGreaterThan(KNOWLEDGE_TITLE_MAX);
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, handoff('long one', [long]));
+
+      // The store titles the entry with the sentence *clipped* to the title
+      // limit, while the handoff reprints it whole. Keying the dedupe on the raw
+      // sentence instead of the derived title would miss this pair and print the
+      // decision twice — once as `**stem…** — sentence`, once in the handoff.
+      const markdown = engine.renderMarkdown(engine.recall(null, repo));
+      expect(markdown).toContain(`Decisions:\n- ${long}`);
+      expect(markdown).not.toContain('## Decisions, gotchas & conventions');
+      expect(countOccurrences(markdown, long)).toBe(1);
     } finally {
       engine.close();
     }
   });
 });
+
+/** How many times `needle` appears in `text`. A sentence printed twice is the
+ *  bug the recall dedupe guards, and `toContain` cannot see the difference. */
+function countOccurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
 
 /** A database holding handoffs written before knowledge had a producer: the
  *  sessions table only, and no `meta` marker to say the backfill already ran. */
@@ -462,7 +508,11 @@ describe('knowledge — gotchas and conventions are their own kinds', () => {
       const markdown = engine.renderMarkdown(engine.recall(null, repo));
       expect(markdown).toContain('Gotchas:\n- watch the port clash');
       expect(markdown).toContain('Conventions:\n- run the linter');
-      expect(markdown).toContain('## Decisions, gotchas & conventions');
+      // this handoff reprints them itself, so the notes block is skipped and each
+      // sentence is printed once instead of twice
+      expect(markdown).not.toContain('## Decisions, gotchas & conventions');
+      expect(countOccurrences(markdown, 'watch the port clash')).toBe(1);
+      expect(countOccurrences(markdown, 'run the linter')).toBe(1);
     } finally {
       engine.close();
     }
@@ -506,6 +556,9 @@ describe('recall — a query-less recall is repo-anchored, not path-seeded', () 
         decisions: ['keep WAL on for concurrent readers'],
         nextSteps: [],
       });
+      // a later handoff takes the "last session" slot, so the decision is served
+      // from the knowledge store instead of being reprinted by the handoff
+      engine.saveSession(repo, { goal: 'next session', facts: [], decisions: [], nextSteps: [] });
 
       const result = engine.recall(null, repo);
       expect(result.facts.map((f) => f.key)).toContain('project.demo.test-cmd');
@@ -554,6 +607,7 @@ describe('recall — a query-less recall is repo-anchored, not path-seeded', () 
         decisions: ['keep WAL on for concurrent readers'],
         nextSteps: [],
       });
+      engine.saveSession(repo, { goal: 'next session', facts: [], decisions: [], nextSteps: [] });
 
       expect(engine.recall('WAL concurrent', repo).knowledge).toHaveLength(1);
     } finally {

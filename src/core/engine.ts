@@ -9,7 +9,7 @@
  * global recall is additionally filtered so other repos' knowledge never leaks.
  */
 import { normalizeRepoPath, parseAllowedRepos, assertRepoAllowed } from './paths.js';
-import { Store, ftsEscape, KNOWLEDGE_BACKFILL_META } from './store.js';
+import { Store, ftsEscape, knowledgeTitle, KNOWLEDGE_BACKFILL_META } from './store.js';
 import { Indexer, isSecretBearingFile } from '../indexer/indexer.js';
 import { containsSecret } from './secrets.js';
 import { AegisxError, type FactHistoryEntry, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats, type SessionHandoff, type SessionHandoffInput, type SessionSaveSummary } from './types.js';
@@ -369,7 +369,7 @@ export class Engine {
     // 2. Knowledge (decisions/gotchas): anchored to the repo when there is no
     //    query, otherwise FTS-ranked and repo-scoped (or allowlist-filtered when
     //    the recall has no repo, so a global recall cannot leak other projects).
-    const knowledge = !anchored && ftsQuery !== null
+    const rankedKnowledge = !anchored && ftsQuery !== null
       ? this.filterAllowedKnowledge(this.store.searchKnowledge(effectiveQuery, repo, 10))
       : (repo !== null ? this.store.knowledgeForRepo(repo, 10) : []);
 
@@ -383,7 +383,17 @@ export class Engine {
     // 4. Last session handoff for this repo.
     const lastSession = repo !== null ? this.store.lastSession(repo) : undefined;
 
-    // 5. Deterministic structure brief.
+    // 5. Drop the notes that handoff reprints verbatim. A handoff note *is* a
+    //    knowledge entry (same sentence, same title), so showing both spends the
+    //    budget printing one sentence twice; the handoff, being the newest
+    //    context, keeps the copy. Deduping here — rather than at render time —
+    //    also keeps the budget estimate and the knowledge telemetry honest.
+    const reprintedNotes = handoffNoteTitles(lastSession);
+    const knowledge = reprintedNotes.size === 0
+      ? rankedKnowledge
+      : rankedKnowledge.filter((k) => !reprintedNotes.has(k.title));
+
+    // 6. Deterministic structure brief.
     const brief = repo !== null ? this.indexer.buildBrief(repo) : '';
 
     // Budget: drop lowest-priority items until under budget, never mid-fact.
@@ -488,6 +498,22 @@ export function describeSessionSave(summary: SessionSaveSummary): string {
     parts.push(`${summary.notesAlreadyKnown} already known`);
   }
   return parts.length === 0 ? '' : ` — ${parts.join(', ')}`;
+}
+
+/** The titles the handoff block reprints, derived exactly as the knowledge
+ *  store derives them (a note is titled by its own sentence, clipped when it
+ *  exceeds the title limit), so the same note is recognised in both places. */
+function handoffNoteTitles(session: SessionHandoff | undefined): Set<string> {
+  const titles = new Set<string>();
+  if (session === undefined) {
+    return titles;
+  }
+  for (const list of [session.decisions, session.gotchas, session.conventions]) {
+    for (const note of list) {
+      titles.add(knowledgeTitle(note));
+    }
+  }
+  return titles;
 }
 
 /**
