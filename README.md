@@ -336,13 +336,14 @@ aegisxmemory dashboard --port 4021
 
 A read-only view of everything the engine remembers — refreshed every 10 s, rendered locally:
 
-- **Totals cards** — repos, facts, knowledge entries, session handoffs, estimated tokens saved
-- **Knowledge graph** — interactive force-directed map (repos as hubs; facts, decisions/gotchas, and handoffs orbiting them); drag nodes to untangle, hover for details; colors: repo violet · fact green · knowledge amber · session cyan
-- **Recall history chart** — last 50 recalls as bars (teal = hit, amber = cold miss; height ≈ tokens returned; hover for details)
-- **Per-repo table** — files/symbols indexed, scans, recalls, hit rate
-- **Pinned facts & recent handoffs** — with repo hints and timestamps; a key that was re-pinned carries a **changed** badge plus the value it replaced (`was: 3000 (changed 2026-09-12)`), the same signal recall gives the agent
+- **Bento totals** — estimated tokens saved (with a sparkline), repos, facts (including how many changed since they were first pinned), knowledge entries, handoffs, and a recall hit-rate ring
+- **Knowledge graph** — interactive force-directed map (repos as hubs; facts, decisions/gotchas, and handoffs orbiting them); drag nodes to untangle; one animation loop that pauses while the tab is hidden, plus a **List view** toggle that renders the same nodes as a table for keyboard and screen-reader users
+- **Recall history chart** — last 50 recalls as bars you can Tab through, each with a label and tooltip (teal = hit, amber = cold miss; height ≈ tokens returned)
+- **Per-repo table** — files/symbols indexed, scans, recalls, hit rate; select a repository to see its facts and handoffs
+- **Pinned facts** — filterable, a copy button per fact, and a **changed** badge plus the value it replaced (`was: 3000 (changed 2026-09-12)`) — the same signal recall gives the agent
+- **Light / dark / auto** — one token layer (`--bg`, `--surface`, `--fg-muted`, …); the theme is resolved before first paint from your OS preference, and the topbar button cycles Auto → Light → Dark
 
-The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose it), serves inline CSS/JS with **no CDN or external requests** (works offline), and renders all stored data via `textContent`, so a malicious fact value can never inject markup into the page.
+The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose it), serves its stylesheet and script from its own origin (`/app.css`, `/app.js`) with **no CDN and no external requests** (works fully offline), and renders all stored data via `textContent`, so a malicious fact value can never inject markup into the page. It also honours `prefers-reduced-motion`, exposes a live connection status, and marks every section as a labelled landmark for screen readers.
 
 ## 9. CLI reference
 

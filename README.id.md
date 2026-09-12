@@ -336,13 +336,14 @@ aegisxmemory dashboard --port 4021
 
 Tampilan read-only dari semua yang diingat engine — menyegarkan tiap 10 detik, dirender lokal:
 
-- **Kartu total** — repos, fakta, entri knowledge, handoff sesi, estimasi token yang dihemat
-- **Knowledge graph** — peta force-directed interaktif (repo sebagai hub; fakta, keputusan/gotcha, dan handoff mengorbitnya); drag node untuk merapikan, hover untuk detail; warna: repo ungu · fakta hijau · knowledge kuning · sesi cyan
-- **Graf riwayat recall** — 50 recall terakhir sebagai bar (teal = hit, kuning = miss dingin; tinggi ≈ token yang dikembalikan; hover untuk detail)
-- **Tabel per-repo** — file/simbol terindeks, scan, recall, hit rate
-- **Fakta ter-pin & handoff terbaru** — dengan repo dan timestamp; fakta yang di-pin ulang membawa badge **changed** beserta nilai yang digantikannya (`was: 3000 (changed 2026-09-12)`), sinyal yang sama dengan yang diterima agent saat recall
+- **Kartu total bergaya bento** — estimasi token yang dihemat (plus sparkline), repos, fakta (termasuk berapa yang berubah sejak pertama di-pin), entri knowledge, handoff, dan cincin hit-rate recall
+- **Knowledge graph** — peta force-directed interaktif (repo sebagai hub; fakta, keputusan/gotcha, dan handoff mengorbitnya); drag node untuk merapikan; satu loop animasi saja yang berhenti saat tab disembunyikan, plus tombol **List view** yang menampilkan node yang sama sebagai tabel untuk pengguna keyboard dan screen reader
+- **Graf riwayat recall** — 50 recall terakhir sebagai bar yang bisa di-Tab, masing-masing punya label dan tooltip (teal = hit, kuning = miss dingin; tinggi ≈ token yang dikembalikan)
+- **Tabel per-repo** — file/simbol terindeks, scan, recall, hit rate; pilih sebuah repo untuk melihat fakta dan handoff-nya
+- **Fakta ter-pin** — bisa difilter, ada tombol copy per fakta, dan badge **changed** beserta nilai yang digantikannya (`was: 3000 (changed 2026-09-12)`) — sinyal yang sama dengan yang diterima agent saat recall
+- **Terang / gelap / otomatis** — satu token layer (`--bg`, `--surface`, `--fg-muted`, …); tema sudah ditentukan sebelum render pertama mengikuti preferensi OS Anda, dan tombol di kanan atas memutar Auto → Terang → Gelap
 
-Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membukanya), menyajikan CSS/JS inline **tanpa CDN atau request eksternal** (bekerja offline), dan merender semua data via `textContent`, jadi nilai fakta jahat tidak akan pernah bisa menyuntikkan markup ke halaman.
+Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membukanya), menyajikan stylesheet dan script-nya dari origin sendiri (`/app.css`, `/app.js`) **tanpa CDN dan tanpa request eksternal** (bekerja penuh secara offline), dan merender semua data via `textContent`, jadi nilai fakta jahat tidak akan pernah bisa menyuntikkan markup ke halaman. Dashboard juga menghormati `prefers-reduced-motion`, menampilkan status koneksi live, dan menandai setiap bagian sebagai landmark berlabel untuk screen reader.
 
 ## 9. Referensi CLI
 
