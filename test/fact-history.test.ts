@@ -40,6 +40,20 @@ describe('fact history — happy paths', () => {
     );
   });
 
+  it('listFacts carries the superseded value so the dashboard can flag a change', () => {
+    engine.remember('project.app.dev-port', '3000', repoDir);
+    engine.remember('project.app.dev-port', '5000', repoDir);
+    engine.remember('project.app.stack', 'node', repoDir);
+
+    const facts = engine.dashboardData().facts;
+    const changed = facts.find((f) => f.key === 'project.app.dev-port');
+    const fresh = facts.find((f) => f.key === 'project.app.stack');
+    expect(changed?.value).toBe('5000');
+    expect(changed?.previousValue).toBe('3000');
+    // A key pinned once has nothing to report — the panel must not invent a change.
+    expect(fresh?.previousValue).toBeUndefined();
+  });
+
   it('keeps a bounded timeline, newest superseded value first', () => {
     for (let i = 0; i < FACT_HISTORY_MAX + 5; i++) {
       engine.remember('project.app.port', `p${i}`, repoDir);

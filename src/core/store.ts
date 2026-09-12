@@ -644,12 +644,15 @@ export class Store {
     return rows.map((row) => row.repo);
   }
 
-  /** All facts, newest first (dashboard table; owner-facing, not repo-scoped). */
+  /** All facts, newest first (dashboard table; owner-facing, not repo-scoped).
+   *  Carries the superseded value too, so the dashboard can flag re-pinned keys
+   *  the same way recall does. */
   listFacts(limit = 100): MemoryFact[] {
     const rows = this.prepared(
-      `SELECT key, value, repo_hint, updated_at FROM facts ORDER BY updated_at DESC, key ASC LIMIT ?`,
-    ).all(limit) as Array<{ key: string; value: string; repo_hint: string | null; updated_at: string }>;
-    return rows.map((row) => ({ key: row.key, value: row.value, repoHint: row.repo_hint, updatedAt: row.updated_at }));
+      `SELECT f.key, f.value, f.repo_hint, f.updated_at, ${PREVIOUS_VALUE_SQL} AS previous_value
+       FROM facts f ORDER BY f.updated_at DESC, f.key ASC LIMIT ?`,
+    ).all(limit) as FactRow[];
+    return rows.map((row) => this.toFact(row));
   }
 
   /** All knowledge records across repos, newest first (dashboard graph; owner-facing). */

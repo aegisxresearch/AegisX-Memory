@@ -44,10 +44,11 @@ const PAGE_HTML = `<!doctype html>
   .pill { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 12px; }
   .pill.ok { background: #052e22; color: #34d399; }
   .pill.miss { background: #2b1207; color: #fbbf24; }
+  .pill.changed { background: #1e1b4b; color: #a5b4fc; }
   .bar { height: 8px; border-radius: 99px; background: #1f2937; overflow: hidden; margin-top: 6px; }
   .bar > i { display: block; height: 100%; background: linear-gradient(90deg,#34d399,#22d3ee); }
   ul { list-style: none; }
-  li { padding: 9px 0; border-bottom: 1px solid #17223a; display: flex; gap: 10px; align-items: baseline; }
+  li { padding: 9px 0; border-bottom: 1px solid #17223a; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
   li:last-child { border-bottom: none; }
   .key { color: #93c5fd; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; white-space: nowrap; }
   .repo { color: #a78bfa; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -309,17 +310,25 @@ function render(d) {
     rp.appendChild(t);
   }
 
-  // facts list
+  // facts list — a re-pinned key keeps its previous value, so show what changed
   const fl = document.getElementById('facts'); fl.replaceChildren();
   if (!(d.facts || []).length) {
     const p = el('div', 'panel'); p.appendChild(el('div', 'empty', 'No pinned facts yet — “aegisxmemory remember project.<name>.<key> <value>”.'));
     fl.appendChild(p);
   } else {
     const p = el('div', 'panel'); const ul = el('ul');
+    const changed = d.facts.filter((f) => f.previousValue !== undefined);
+    if (changed.length) {
+      p.appendChild(el('div', 'sub', changed.length + ' of ' + d.facts.length + ' facts changed since they were first pinned — “was” shows the value the last re-pin replaced.'));
+    }
     for (const f of d.facts) {
       const li = el('li');
       li.appendChild(el('span', 'key', f.key));
       li.appendChild(el('span', null, f.value));
+      if (f.previousValue !== undefined) {
+        li.appendChild(el('span', 'pill changed', 'changed'));
+        li.appendChild(el('span', 'muted', 'was: ' + f.previousValue + ' (changed ' + String(f.updatedAt || '').slice(0, 10) + ')'));
+      }
       li.appendChild(el('span', 'muted', f.repoHint ? '· ' + f.repoHint : ''));
       ul.appendChild(li);
     }

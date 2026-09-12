@@ -76,6 +76,29 @@ describe('dashboard — local web view', () => {
     expect(parsed.repos.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('facts panel: a re-pinned key arrives with the value it replaced', async () => {
+    engine.remember('project.demo.dev-port', '3000', null);
+    engine.remember('project.demo.dev-port', '5000', null);
+    engine.remember('project.demo.stack', 'node', null);
+
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const data = await get(stopper.url, '/api/data');
+    const parsed = JSON.parse(data.body) as {
+      facts: Array<{ key: string; value: string; updatedAt: string; previousValue?: string }>;
+    };
+    const changed = parsed.facts.find((f) => f.key === 'project.demo.dev-port');
+    expect(changed?.value).toBe('5000');
+    expect(changed?.previousValue).toBe('3000');
+    const fresh = parsed.facts.find((f) => f.key === 'project.demo.stack');
+    expect(fresh?.previousValue).toBeUndefined();
+
+    // The panel renders that data client-side; the served template must carry the
+    // changed-state markup without embedding any stored value.
+    const page = await get(stopper.url, '/');
+    expect(page.body).toContain('Pinned facts');
+    expect(page.body).toContain('changed since they were first pinned');
+  });
+
   it('negative: unknown paths 404', async () => {
     stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
     const res = await get(stopper.url, '/etc/passwd');
