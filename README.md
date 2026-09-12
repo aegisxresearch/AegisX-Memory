@@ -16,7 +16,7 @@ Every new AI agent session re-explores your repo: architecture, decisions, gotch
 - 🤖 **Agent-native** — 5 MCP tools work with Hermes, Claude, Cursor, Gemini CLI, Codex, Windsurf, VS Code, or any MCP client
 - 📊 **Observable** — local web dashboard with an interactive knowledge graph
 
-## ⚡ TL;DR — install, run `setup`, answer 2 questions. Done.
+## ⚡ TL;DR — install, run one command. Done.
 
 **Step 1 — install:**
 
@@ -24,11 +24,15 @@ Every new AI agent session re-explores your repo: architecture, decisions, gotch
 curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
 ```
 
-**Step 2 — the guided wizard** (it asks which agent you use and whether memory should be automatic — that's it):
+**Step 2 — everything else in one command:**
 
 ```bash
-aegisxmemory setup
+aegisxmemory auto
 ```
+
+`auto` detects every agent config on your machine (Hermes, Claude, Cursor, …), wires the MCP registration + auto-memory rules + deterministic hooks into each, then starts the MCP HTTP server and the web dashboard as background daemons and prints their URLs. No questions asked; rerun any time — it is idempotent and restarts the daemons safely.
+
+> Prefer to pick the agent yourself (and answer 2 questions instead of zero)? `aegisxmemory setup` does the wiring alone.
 
 **Step 3 — restart your agent.** Done. Nothing else to run — ever.
 
@@ -201,6 +205,7 @@ The CLI is great for you, but the real win is the agent calling the tools itself
 ### 5.1 One command (recommended)
 
 ```bash
+aegisxmemory auto                                   # zero questions: wire every detected agent + start servers
 aegisxmemory setup                                  # guided wizard — asks, then does everything
 aegisxmemory mcp-config --install --agent hermes --rules   # manual equivalent, one shot
 aegisxmemory mcp-config --install --agent hermes    # Hermes only
@@ -209,7 +214,9 @@ aegisxmemory mcp-config --install                   # all seven known agents at 
 
 Supported `--agent` values: **hermes, claude, cursor, gemini, codex, windsurf, vscode** (or `all`). Agents that read `AGENTS.md` (Codex, Copilot, Gemini CLI, Zed, …) also pick up the rules with `--project-rules`, no config edit needed.
 
-The `setup` wizard is the friendly front door: it asks *which agent* you use (Hermes / Claude / Cursor / Gemini / Codex / Windsurf / VS Code / all) and *whether memory should be automatic*, then chains exactly the commands below. Safe to re-run any time.
+`auto` is the zero-question front door: it probes each known agent's config path, wires every one that exists, installs the deterministic hooks (see [§6.1](#61-hooks--the-layer-that-does-not-ask-claude-code) and the Hermes equivalent below), then starts the MCP HTTP server and dashboard as daemons — `aegisxmemory auto --status` shows what is running, `--down` stops it.
+
+The `setup` wizard is the same wiring with two questions: *which agent* you use (Hermes / Claude / Cursor / Gemini / Codex / Windsurf / VS Code / all — with detected ones pre-selected) and *whether memory should be automatic*, then chains exactly the commands below. Safe to re-run any time.
 
 The installer:
 
@@ -345,6 +352,15 @@ Two entries are written (marker-wrapped, backed up, idempotent — user hooks un
 
 `aegisxmemory hook session-end --json` prints the Claude Code Stop-hook payload (`{"decision":"block","reason":…}`) that tells the agent to save the handoff before stopping — install it by hand if you want that enforced too. Every hook degrades instead of failing: a missing memory home, a denied repo, or a spent deadline becomes a stderr note and exit 0, never an agent-visible error. Restart Claude Code after installing (hooks are read at launch).
 
+**Hermes gets the same deterministic layer automatically.** `setup`/`auto` (or `mcp-config --install --agent hermes --rules`) merges two shell hooks into `~/.hermes/config.yaml`:
+
+| Hook | Fires | What it does |
+|---|---|---|
+| `pre_llm_call` | first turn of every session | injects the budgeted memory block (`{"context": …}`) before the model sees anything |
+| `pre_verify` | the agent edited code and is about to finish | one nudge (`{"decision":"block","reason":…}`) to save the handoff first |
+
+The scripts live in `~/.hermes/agent-hooks/`, are marker-identified and idempotent, and `uninstall --agent hermes` removes both entries and the scripts. Verify with `hermes hooks doctor`.
+
 ## 7. The daily loop
 
 Everything repo-aware uses the **current working directory** — `cd` into the project first. Memory is namespaced per path: project A and project B never bleed into each other.
@@ -422,6 +438,7 @@ The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose i
 | Command | Purpose |
 |---|---|
 | `aegisxmemory init` | create the memory home + DB, print setup hints |
+| `aegisxmemory auto [--mcp-port n] [--dash-port n] [--no-setup] [--status] [--down]` | wire every detected agent + run the MCP HTTP server and dashboard as daemons; `--status` shows state, `--down` stops them |
 | `aegisxmemory index [path]` | full/incremental hash scan of a repo |
 | `aegisxmemory recall [query] [--budget n] [--full]` | context block (markdown), ending in a coverage line; `--full` skips the caps and trim |
 | `aegisxmemory remember <key> <value>` | pin a stable fact |

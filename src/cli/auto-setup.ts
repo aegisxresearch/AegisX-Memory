@@ -56,6 +56,38 @@ function expand(p: string): string {
   return p;
 }
 
+/* ---------------------------------------------------------- agent detection */
+
+/** One probe per agent: where its config lives and whether it exists.
+ *  Env-var aware because every configPathFor honors the same overrides — a
+ *  detection that ignored $HERMES_HOME would disagree with the writer that
+ *  consumes it. `vscode` is repo-scoped by design (`.vscode/mcp.json`), so it
+ *  only reports `true` when the caller anchors a project directory. */
+export interface AgentProbe {
+  agent: SetupAgent;
+  configPath: string;
+  installed: boolean;
+}
+
+/** Detect which agents have a config file on this machine. Pure and cheap:
+ *  stat calls only, no parsing — existence is the signal, because an agent
+ *  writes its config on first launch even before any MCP server is added. */
+export function detectInstalledAgents(projectDir?: string): AgentProbe[] {
+  return SETUP_AGENTS.map((agent) => {
+    let configPath = configPathFor(agent);
+    if (agent === 'vscode' && projectDir !== undefined) {
+      configPath = path.join(projectDir, '.vscode', 'mcp.json');
+    }
+    let installed: boolean;
+    try {
+      installed = fs.statSync(configPath).isFile();
+    } catch {
+      installed = false;
+    }
+    return { agent, configPath, installed };
+  });
+}
+
 /** Default config file location per agent — mirrors doctor.ts detection. */
 export function configPathFor(agent: SetupAgent): string {
   switch (agent) {

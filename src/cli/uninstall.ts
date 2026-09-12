@@ -24,7 +24,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseDocument, isMap, stringify } from 'yaml';
+import { parseDocument, isMap, isScalar, isSeq, stringify, type YAMLMap } from 'yaml';
 import { AegisxError } from '../core/types.js';
 import {
   PROJECT_RULES_FILE,
@@ -310,6 +310,12 @@ export function runUninstall(scope: UninstallScope): UninstallResult[] {
   if (scope.hooks) {
     out.push(uninstallClaudeHooks(scope.claudeSettings ?? claudeSettingsPath(false)));
   }
+  // Mirror of the Hermes hook installer: setup --agent hermes merges the
+  // pre_llm_call/pre_verify pair into config.yaml, so unwiring hermes removes
+  // it again — scripts included, config backup kept.
+  if (scope.agents.includes('hermes')) {
+    out.push(uninstallHermesHooks(configPathFor('hermes')));
+  }
   // Mirror the installer, file for file: setup writes the repo AGENTS.md block
   // unconditionally (inside a repo) and auto-installs project-scope Claude
   // hooks when claude is among the targets — so an ordinary uninstall removes
@@ -326,6 +332,79 @@ export function runUninstall(scope: UninstallScope): UninstallResult[] {
     out.push(uninstallClaudeHooks(claudeSettingsPath(true, dir)));
   }
   return out;
+}
+
+/** Remove the Hermes hook pair the installer wrote: entries out of config.yaml
+ *  (backup kept), the hook scripts deleted, the agent-hooks dir left if the
+ *  user added their own hooks alongside. Idempotent: no block → absent. */
+export function uninstallHermesHooks(configFile: string): UninstallResult {
+  const what = 'hermes-hooks';
+  if (!fs.existsSync(configFile)) return { what, path: configFile, action: 'absent', backup: null, detail: 'config file does not exist' };
+  let doc: ReturnType<typeof parseDocument>;
+  try {
+    doc = parseDocument(fs.readFileSync(configFile, 'utf8'));
+  } catch (err) {
+    return { what, path: configFile, action: 'error', backup: null, detail: `not valid YAML (${err instanceof Error ? err.message : String(err)}) — nothing removed` };
+  }
+  const hooks = doc.get('hooks', true) as unknown;
+  if (!isMap(hooks)) return { what, path: configFile, action: 'absent', backup: null, detail: 'no hooks block' };
+
+  let touched = false;
+  const scriptFiles: string[] = [];
+  for (const [event, fileName] of [['pre_llm_call', 'aegisx-recall.sh'], ['pre_verify', 'aegisx-save-nudge.sh']] as const) {
+    const list = hooks.get(event, true);
+    if (!isSeq(list)) continue;
+    const kept = list.items.filter((item: unknown) => {
+      const cmd = isMap(item) && isScalar((item as YAMLMap).get('command', true)) ? String((item as YAMLMap).get('command', true)) : null;
+      const ours = cmd !== null && cmd.includes(fileName);
+      if (ours && cmd !== null) scriptFiles.push(cmd);
+      return !ours;
+    });
+    if (kept.length !== list.items.length) {
+      touched = true;
+      if (kept.length === 0) hooks.delete(event);
+      else list.items = kept;
+    }
+  }
+  if (!touched) return { what, path: configFile, action: 'absent', backup: null, detail: 'no aegisx hook entries' };
+
+  // One uninstall run can touch one file through several removers (mcp, then
+  // hooks). The backup must capture the file as it was BEFORE the run, so only
+  // the first remover writes it — a second write would clobber the snapshot
+  // with a half-dismantled state.
+  const firstBackup = (file: string): string => {
+    const p = `${file}.aegisx-bak`;
+    if (fs.existsSync(p)) return p;
+    return backupFile(file, fs.readFileSync(file, 'utf8'));
+  };
+  const backup = firstBackup(configFile);
+
+  // If the hooks map is now empty and this file was ours alone, drop the key.
+  if (hooks.items.length === 0) doc.delete('hooks');
+
+  // `hooks_auto_accept` is written by the installer alongside the hook pair.
+  // If nothing else remains (no model block, no mcp_servers, no user keys),
+  // the file was ours alone and the honest removal deletes it — same contract
+  // as the MCP/rules removers, instead of leaving a one-key husk.
+  const remaining = doc.toJS() as unknown;
+  const remainingKeys = remaining !== null && typeof remaining === 'object' && !Array.isArray(remaining) ? Object.keys(remaining as Record<string, unknown>) : [];
+  const oursAlone = remainingKeys.every((key) => key === 'hooks_auto_accept');
+  if (oursAlone && remainingKeys.length <= 1) {
+    fs.rmSync(configFile, { force: true });
+    return { what, path: configFile, action: 'file-deleted', backup: firstBackup(configFile), detail: 'hook entries removed — config held nothing else, deleted' };
+  }
+  doc.delete('hooks_auto_accept');
+
+  fs.writeFileSync(configFile, String(doc));
+
+  for (const script of scriptFiles) {
+    try {
+      fs.rmSync(script, { force: true });
+    } catch {
+      // best effort — the config entry is gone either way
+    }
+  }
+  return { what, path: configFile, action: 'removed', backup, detail: 'hook entries removed from config.yaml, scripts deleted' };
 }
 
 /** Which installer extras a plain uninstall mirrors for these agents: the

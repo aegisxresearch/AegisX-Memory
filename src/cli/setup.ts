@@ -16,9 +16,9 @@ import readline from 'node:readline/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
-import { SETUP_AGENTS, describeProjectRulesResult, describeResult, describeRulesResult, installForAgent, installProjectRules, installRulesForAgent, type SetupAgent } from './auto-setup.js';
+import { SETUP_AGENTS, configPathFor, describeProjectRulesResult, describeResult, describeRulesResult, detectInstalledAgents, installForAgent, installProjectRules, installRulesForAgent, type SetupAgent } from './auto-setup.js';
 import { claudeSettingsPath, describeHookInstall, installClaudeHooks } from './hooks.js';
-import { defaultServerConfig } from './mcp-config.js';
+import { installHermesHooks } from './hermes-hooks.js';import { defaultServerConfig } from './mcp-config.js';
 import type { Engine } from '../core/engine.js';
 
 export interface SetupChoice {
@@ -35,6 +35,11 @@ export interface SetupOptions {
    * callers so a test can never modify a real repository.
    */
   projectDir?: string;
+  /**
+   * Injectable detection seam (tests): overrides the on-disk probe so a test
+   * can simulate an installed agent without creating real home files.
+   */
+  detected?: SetupAgent[];
   /**
    * Non-interactive mode (`setup --yes`): skip every question and apply the
    * given choices. Agents default to hermes when omitted; rules default to
@@ -99,11 +104,17 @@ function say(text: string): void {
   process.stdout.write(text);
 }
 
-function printMenu(): void {
+function printMenu(detected: readonly string[]): void {
   say('\nSetup AegisX-Memory — memori permanen untuk AI agent Anda.\n');
+  if (detected.length > 0) {
+    say(`Terpasang di mesin ini: ${detected.join(', ')}.\n`);
+  } else {
+    say('Tidak ada config agent yang terdeteksi — Hermes dipakai sebagai default.\n');
+  }
   say('\nAgent mana yang Anda pakai?\n');
   for (const a of AGENT_LABELS) {
-    say(`  ${a.key}. ${a.hint}\n`);
+    const tag = detected.includes(a.agent) ? '  ← terdeteksi' : '';
+    say(`  ${a.key}. ${a.hint}${tag}\n`);
   }
 }
 
@@ -123,23 +134,28 @@ async function askUntil(rl: readline.Interface, question: string, resolve: (a: s
 /** Run the wizard. `engine` is optional (used to show a final verification line). */
 export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}): Promise<void> {
   const instream = input;
+  // One detection pass for every mode: `--yes` without explicit agents, the
+  // interactive default, and the non-TTY fallback all prefer what is actually
+  // installed over a hardcoded guess.
+  const detected = options.detected ?? detectInstalledAgents(options.projectDir).filter((p) => p.installed).map((p) => p.agent);
   let choice: SetupChoice;
 
   if (options.yes !== undefined) {
     // Explicit non-interactive mode: the answers were given on the command
     // line, so none are asked — not even the TTY check matters.
-    choice = { agents: options.yes.agents ?? ['hermes'], rules: options.yes.rules ?? true };
+    choice = { agents: options.yes.agents ?? (detected.length > 0 ? detected : ['hermes']), rules: options.yes.rules ?? true };
     say(`(mode non-interaktif --yes: ${choice.agents.join(', ')} + aturan ${choice.rules ? 'aktif' : 'mati'})\n`);
   } else if (options.prompt !== undefined) {
     // Test/programmatic seam: no readline, no stream timing.
     choice = await options.prompt();
     say('');
   } else if (instream.isTTY === true) {
+    const defaultAgents: SetupAgent[] = detected.length > 0 ? detected : ['hermes'];
     const rl = readline.createInterface({ input: instream, output });
     try {
-      printMenu();
-      const agentAnswer = await askUntil(rl, 'Pilih 1-8 [Enter = 1, Hermes]: ', resolveAgents);
-      const agents = resolveAgents(agentAnswer) ?? ['hermes'];
+      printMenu(detected);
+      const agentAnswer = await askUntil(rl, `Pilih 1-8 [Enter = ${defaultAgents.join('+')}]: `, resolveAgents);
+      const agents = resolveAgents(agentAnswer) ?? defaultAgents;
       const rulesAnswer = await askUntil(
         rl,
         'Aktifkan ingatan otomatis (recall saat mulai, save saat selesai)? [Y/n]: ',
@@ -152,9 +168,11 @@ export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}
       rl.close();
     }
   } else {
-    // Non-TTY: never hang. Apply the recommended defaults.
-    choice = { agents: ['hermes'], rules: true };
-    say('(bukan sesi interaktif — memakai default: hermes + aturan otomatis)\n');
+    // Non-TTY: never hang. Auto-detect replaces the hardcoded hermes default:
+    // the agent the user actually has beats a guess about the one they might.
+    const agents: SetupAgent[] = detected.length > 0 ? detected : ['hermes'];
+    choice = { agents, rules: true };
+    say(`(bukan sesi interaktif — memakai deteksi otomatis: ${agents.join(', ')} + aturan otomatis)\n`);
   }
 
   say('\n');
@@ -176,12 +194,23 @@ export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}
   }
 
   // Claude Code hooks are the one automation layer that does not depend on
-  // the model reading any rules file: the agent itself fires them. Offered
-  // whenever Claude is among the chosen targets and rules are on; project
-  // scope only — a wizard should never edit the user's global settings.
+  // the model reading any rules file: the agent itself fires them. Installed
+  // automatically whenever Claude is among the chosen targets and rules are
+  // on; project scope only — a wizard never edits the user's global settings.
   if (choice.rules && choice.agents.includes('claude') && options.projectDir !== undefined && path.resolve(options.projectDir) !== path.resolve(os.homedir())) {
     say(describeHookInstall(installClaudeHooks(claudeSettingsPath(true, options.projectDir))) + '\n');
     say('   (SessionStart memuat ingatan otomatis; tiap Write/Edit di-indeks ulang — tanpa bergantung kepatuhan model.)\n');
+  }
+
+  // Hermes gets the equivalent deterministic layer as shell hooks declared in
+  // config.yaml: pre_llm_call injects the recall block, pre_verify nudges the
+  // save. Same automation guarantee, same marker-based idempotence, and the
+  // user-level config is the right scope — hooks resolve the repo from the
+  // event payload at runtime, so one install covers every project.
+  if (choice.rules && choice.agents.includes('hermes')) {
+    const cfgPath = configPathFor('hermes');
+    say(describeHookInstall(installHermesHooks(cfgPath)) + '\n');
+    say('   (pre_llm_call menyuntik ingatan tiap sesi; pre_verify mengingatkan save — otomatis, bukan minta patuh.)\n');
   }
 
   const names = choice.agents.join(', ');

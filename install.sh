@@ -225,10 +225,11 @@ printf '  Version:  %s\n' "$VER"
 printf '  Ref:      %s (%s%s)\n' "$REF" "$REV" "${WHEN:+ · $WHEN}"
 printf '  Sources:  %s\n' "$APP_DIR"
 printf '\n'
-printf '\033[1mOne command left — answer 2 questions, done:\033[0m\n'
-printf '  aegisxmemory setup\n'
-printf '     (connects your agent + enables auto-memory; restart the agent after)\n'
+printf '\033[1mOne command does everything else:\033[0m\n'
+printf '  aegisxmemory auto\n'
+printf '     (wires every agent it detects + starts the MCP server and dashboard, then prints the URLs)\n'
 printf '\n'
+printf '  Agent choice & auto-memory rules:  aegisxmemory setup\n'
 printf '  Prefer manual? aegisxmemory mcp-config --install --agent hermes --rules\n'
 printf '  Update later:  curl -fsSL %s/raw/%s/install.sh | sh\n' \
   "${REPO_URL%.git}" "$REF"

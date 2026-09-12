@@ -16,7 +16,7 @@ Setiap sesi baru AI agent menjelajahi ulang repo Anda: arsitektur, keputusan, je
 - 🤖 **Ramah-agent** — 5 tool MCP yang bekerja dengan Hermes, Claude, Cursor, Gemini CLI, Codex, Windsurf, VS Code, atau klien MCP mana pun
 - 📊 **Terpantau** — dashboard web lokal dengan knowledge graph interaktif
 
-## ⚡ TL;DR — install, jalankan `setup`, jawab 2 pertanyaan. Selesai.
+## ⚡ TL;DR — install, jalankan satu perintah. Selesai.
 
 **Langkah 1 — install:**
 
@@ -24,11 +24,15 @@ Setiap sesi baru AI agent menjelajahi ulang repo Anda: arsitektur, keputusan, je
 curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
 ```
 
-**Langkah 2 — wizard terpandu** (dia nanya agent Anda apa dan mau otomatis apa tidak — itu saja):
+**Langkah 2 — semua sisanya dalam satu perintah:**
 
 ```bash
-aegisxmemory setup
+aegisxmemory auto
 ```
+
+`auto` mendeteksi setiap config agent di mesin Anda (Hermes, Claude, Cursor, …), memasang registrasi MCP + aturan memori otomatis + hook deterministik ke masing-masing, lalu menjalankan server MCP HTTP dan dashboard web sebagai daemon dan mencetak URL-nya. Tanpa pertanyaan; aman dijalankan ulang kapan saja.
+
+> Mau memilih agent sendiri (jawab 2 pertanyaan, bukan nol)? `aegisxmemory setup` melakukan wiring-nya saja.
 
 **Langkah 3 — restart agent Anda.** Selesai. Tidak ada lagi yang perlu dijalankan — selamanya.
 
@@ -201,6 +205,7 @@ CLI enak untuk Anda, tapi hasil sebenarnya adalah agent yang memanggil tool send
 ### 5.1 Satu perintah (disarankan)
 
 ```bash
+aegisxmemory auto                                   # tanpa pertanyaan: wiring semua agent terdeteksi + nyalakan server
 aegisxmemory setup                                  # wizard terpandu — nanya, lalu mengerjakan semua
 aegisxmemory mcp-config --install --agent hermes --rules   # padanan manualnya, sekali jalan
 aegisxmemory mcp-config --install --agent hermes    # khusus Hermes
@@ -209,7 +214,9 @@ aegisxmemory mcp-config --install                   # ketujuh agent yang dikenal
 
 Nilai `--agent` yang didukung: **hermes, claude, cursor, gemini, codex, windsurf, vscode** (atau `all`). Agent yang membaca `AGENTS.md` (Codex, Copilot, Gemini CLI, Zed, …) juga mengambil aturannya lewat `--project-rules`, tanpa mengedit config apa pun.
 
-Wizard `setup` adalah pintu depan yang ramah: dia bertanya *agent Anda apa* (Hermes / Claude / Cursor / Gemini / Codex / Windsurf / VS Code / semua) dan *apakah memorinya harus otomatis*, lalu merangkai persis perintah-perintah di bawah. Aman dijalankan ulang kapan saja.
+`auto` adalah pintu depan tanpa pertanyaan: dia mengecek path config setiap agent yang dikenal, memasang yang ada, memasang hook deterministik (lihat [§6.1](#61-hook--lapisan-yang-tidak-minta-claude-code) dan padanan Hermes di bawah), lalu menjalankan server MCP HTTP dan dashboard sebagai daemon — `aegisxmemory auto --status` menunjukkan yang berjalan, `--down` menghentikannya.
+
+Wizard `setup` adalah wiring yang sama dengan dua pertanyaan: *agent Anda apa* (Hermes / Claude / Cursor / Gemini / Codex / Windsurf / VS Code / semua — yang terdeteksi otomatis ditandai) dan *apakah memorinya harus otomatis*, lalu merangkai persis perintah-perintah di bawah. Aman dijalankan ulang kapan saja.
 
 Installer-nya:
 
@@ -345,6 +352,15 @@ Dua entri ditulis (berpembatas penanda, di-backup, idempotent — hook milik pen
 
 `aegisxmemory hook session-end --json` mencetak payload Stop-hook Claude Code (`{"decision":"block","reason":…}`) yang menyuruh agent menyimpan handoff sebelum berhenti — pasang manual kalau itu pun mau dipaksa. Setiap hook *mengalah*, bukan gagal: memory home yang belum ada, repo yang ditolak allowlist, atau anggaran waktu habis menjadi catatan di stderr dan exit 0 — bukan error yang terlihat agent. Restart Claude Code setelah memasang (hook dibaca saat launch).
 
+**Hermes mendapat lapisan deterministik yang sama secara otomatis.** `setup`/`auto` (atau `mcp-config --install --agent hermes --rules`) menggabungkan dua shell hook ke `~/.hermes/config.yaml`:
+
+| Hook | Kapan | Apa yang dilakukan |
+|---|---|---|
+| `pre_llm_call` | giliran pertama tiap sesi | menyuntikkan blok memori (`{"context": …}`) sebelum model melihat apa pun |
+| `pre_verify` | agent selesai mengedit kode | satu nudge (`{"decision":"block","reason":…}`) agar handoff disimpan dulu |
+
+Skripnya ada di `~/.hermes/agent-hooks/`, ber-marker dan idempoten, dan `uninstall --agent hermes` mencabut kedua entri sekaligus skripnya. Verifikasi dengan `hermes hooks doctor`.
+
 ## 7. Loop harian
 
 Semua perintah yang berbasis repo memakai **direktori kerja saat ini** — `cd` dulu ke foldernya. Memori di-namespace per path: project A dan project B tidak pernah bercampur.
@@ -422,6 +438,7 @@ Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membuka
 | Perintah | Kegunaan |
 |---|---|
 | `aegisxmemory init` | buat memori home + DB, cetak hint setup |
+| `aegisxmemory auto [--mcp-port n] [--dash-port n] [--no-setup] [--status] [--down]` | wiring semua agent terdeteksi + jalankan server MCP HTTP dan dashboard sebagai daemon; `--status` melihat status, `--down` menghentikan |
 | `aegisxmemory index [path]` | scan hash penuh/inkremental atas sebuah repo |
 | `aegisxmemory recall [query] [--budget n] [--full]` | blok konteks (markdown) yang diakhiri baris cakupan; `--full` melewati batas jumlah dan pemangkasan |
 | `aegisxmemory remember <key> <value>` | pin fakta stabil |

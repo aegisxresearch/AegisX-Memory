@@ -17,6 +17,7 @@ import { SETUP_AGENTS, describeProjectRulesResult, describeResult, describeRules
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
 import { startDashboard } from './dashboard.js';
 import { runSetupWizard } from './setup.js';
+import { autoDown, autoStatus, runAuto } from './auto.js';
 import { assertNotHome, describeUninstall, runUninstall, uninstallMirrorTargets } from './uninstall.js';
 import {
   HOOK_INDEX_DEADLINE_MS,
@@ -33,6 +34,10 @@ import { configPathFor, rulesPathFor } from './auto-setup.js';
 import os from 'node:os';
 
 const program = new Command();
+
+function isHomeDir(dir: string): boolean {
+  return path.resolve(dir) === path.resolve(os.homedir());
+}
 
 /* ------------------------------------------------------------------ version */
 
@@ -197,9 +202,9 @@ program
         opts.json,
         () => {
           process.stdout.write(`AegisX-Memory ready at ${aegisxHome()}\n`);
-          process.stdout.write('\nConnecting your agent (Hermes/Claude/Cursor)? One command does it all:\n');
-          process.stdout.write('  aegisxmemory setup\n');
-          process.stdout.write('(or manually: aegisxmemory mcp-config --install --agent hermes --rules)\n');
+          process.stdout.write('\nOne command does everything else (wire agents + start servers):\n');
+          process.stdout.write('  aegisxmemory auto\n');
+          process.stdout.write('(pick agents manually: aegisxmemory setup)\n');
         },
       );
     });
@@ -688,6 +693,51 @@ program
       process.on('SIGTERM', shutdown);
       // Keep the process alive — chokidar's watcher holds the event loop.
       await new Promise<void>(() => undefined);
+    });
+  });
+
+program
+  .command('auto')
+  .description('everything after install: auto-wire detected agents, start the MCP HTTP server + dashboard as daemons, print the live URLs')
+  .option('--mcp-port <n>', 'preferred TCP port for the MCP HTTP server (auto-increments when taken)', intArg, 3359)
+  .option('--dash-port <n>', 'preferred TCP port for the dashboard (auto-increments when taken)', intArg, 3360)
+  .option('--no-setup', 'skip agent wiring (for dotfiles/CI that manage agent configs themselves)')
+  .option('--status', 'print whether the auto daemons are running, without changing anything', false)
+  .option('--down', 'stop the auto-started daemons (agent wiring is kept)', false)
+  .action((opts: { mcpPort: number; dashPort: number; setup: boolean; status: boolean; down: boolean }) => {
+    run(async () => {
+      if (opts.status) {
+        process.stdout.write(autoStatus().detail + '\n');
+        return;
+      }
+      if (opts.down) {
+        const d = autoDown();
+        process.stdout.write(`${d.detail}\n`);
+        return;
+      }
+      if (opts.setup && isHomeDir(process.cwd())) {
+        process.stdout.write('(home directory — the repo-level AGENTS.md and project hooks are skipped)\n');
+      }
+      const report = await runAuto({
+        mcpPort: opts.mcpPort,
+        dashPort: opts.dashPort,
+        setup: opts.setup,
+        projectDir: process.cwd(),
+      });
+      process.stdout.write('');
+      if (report.agents.length > 0) {
+        process.stdout.write(`\nAgents wired: ${report.agents.join(', ')}\n`);
+        process.stdout.write('Restart those agents (MCP has no hot reload) — memory then loads and saves itself.\n');
+      }
+      if (report.mcpHttp !== null) {
+        process.stdout.write(`\nMCP HTTP server: ${report.mcpHttp.url}\n`);
+        process.stdout.write('  (agents that speak streamable HTTP can point here; localhost-only)\n');
+      }
+      if (report.dashboard !== null) {
+        process.stdout.write(`Dashboard:        ${report.dashboard.url}\n`);
+      }
+      for (const note of report.notes) process.stdout.write(`note: ${note}\n`);
+      process.stdout.write('\nStop later with: aegisxmemory auto --down  ·  check with: aegisxmemory auto --status\n');
     });
   });
 
