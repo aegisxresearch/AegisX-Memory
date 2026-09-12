@@ -32,13 +32,25 @@ afterEach(async () => {
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-function get(url: string, pathname: string): Promise<{ status: number; body: string; type: string }> {
+interface Reply {
+  status: number;
+  body: string;
+  type: string;
+  headers: Record<string, string | string[] | undefined>;
+}
+
+function get(url: string, pathname: string): Promise<Reply> {
   return new Promise((resolve, reject) => {
     http.get(new URL(pathname, url), (res) => {
       let body = '';
       res.on('data', (chunk) => (body += chunk));
       res.on('end', () =>
-        resolve({ status: res.statusCode ?? 0, body, type: String(res.headers['content-type'] ?? '') }),
+        resolve({
+          status: res.statusCode ?? 0,
+          body,
+          type: String(res.headers['content-type'] ?? ''),
+          headers: res.headers,
+        }),
       );
     }).on('error', reject);
   });
@@ -230,5 +242,44 @@ describe('dashboard — local web view', () => {
 
     const fetches = (js.body.match(/fetch\('[^']+'/g) ?? []).sort();
     expect(fetches).toEqual(["fetch('/api/data'", "fetch('/api/graph'"]);
+  });
+
+  it('security: every response carries a fresh CSP nonce and never allows inline', async () => {
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const first = await get(stopper.url, '/');
+    const second = await get(stopper.url, '/');
+
+    const csp = String(first.headers['content-security-policy'] ?? '');
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("script-src 'self' 'nonce-");
+    expect(csp).toContain("style-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).not.toContain('unsafe-inline');
+    expect(csp).not.toContain('unsafe-eval');
+
+    const nonceOf = (reply: Reply): string | undefined =>
+      /nonce-([A-Za-z0-9+/=]+)/.exec(String(reply.headers['content-security-policy'] ?? ''))?.[1];
+    const nonce1 = nonceOf(first);
+    const nonce2 = nonceOf(second);
+    expect(nonce1).toBeTruthy();
+    // A nonce that never changes is decoration, not a boundary.
+    expect(nonce2).not.toBe(nonce1);
+    expect(first.body).toContain('nonce="' + nonce1 + '"'); // authorises the theme bootstrap
+    expect(first.body).not.toContain('__NONCE__'); // the placeholder is always substituted
+
+    for (const reply of [first, await get(stopper.url, '/app.css'), await get(stopper.url, '/app.js'), await get(stopper.url, '/api/data')]) {
+      expect(reply.headers['x-content-type-options']).toBe('nosniff');
+      expect(reply.headers['referrer-policy']).toBe('no-referrer');
+      expect(String(reply.headers['content-security-policy'] ?? '')).toContain("default-src 'none'");
+    }
+  });
+
+  it('graph: the loading placeholder is cleared before the canvas takes over', async () => {
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const js = await get(stopper.url, '/app.js');
+    // Regression lock: the skeleton paragraph used to stay in the DOM above the
+    // graph forever, and a failed graph fetch left it there as a stuck "Loading…".
+    expect(js.body).toMatch(/function mountGraph\(\)[\s\S]{0,200}?clear\(host\)/);
+    expect(js.body).toContain('Graph unavailable');
   });
 });

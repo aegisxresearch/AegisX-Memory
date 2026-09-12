@@ -16,6 +16,7 @@
  * avoid a flash of the wrong theme.
  */
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { Engine } from '../core/engine.js';
 import { AegisxError } from '../core/types.js';
@@ -34,7 +35,7 @@ const PAGE_HTML = `<!doctype html>
 <meta name="color-scheme" content="light dark">
 <title>AegisX-Memory — Dashboard</title>
 <link rel="icon" href="data:,">
-<script>try{var m=localStorage.getItem('aegisx-theme')||'auto';var d=m==='dark'||(m==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');}catch(e){document.documentElement.setAttribute('data-theme','dark');}</script>
+<script nonce="__NONCE__">try{var m=localStorage.getItem('aegisx-theme')||'auto';var d=m==='dark'||(m==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');}catch(e){document.documentElement.setAttribute('data-theme','dark');}</script>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -595,6 +596,7 @@ const APP_JS = `'use strict';
   function mountGraph() {
     var host = byId('graph');
     if (!host || G.svg) { return; }
+    clear(host); // drop the loading placeholder before the canvas takes over
     host.classList.add('graph');
     var node = svg('svg', { viewBox: '0 0 ' + VIEW_W + ' ' + VIEW_H, width: '100%', height: VIEW_H, role: 'group', 'aria-label': 'Memory graph: repositories with their facts, knowledge and handoffs' });
     G.layer = node;
@@ -1009,10 +1011,20 @@ const APP_JS = `'use strict';
   }
 
   // ---------------------------------------------------------------- poll
+  function graphUnavailable() {
+    if (G.svg || G.list) { return; } // never clobber something already rendered
+    var host = byId('graph');
+    if (host) {
+      clear(host);
+      host.appendChild(el('p', 'empty', 'Graph unavailable — the server did not return the graph projection.'));
+    }
+  }
   function loadGraph() {
     fetch('/api/graph', { cache: 'no-store' }).then(function (r) {
       return r.ok ? r.json() : null;
-    }).then(function (g) { if (g) { updateGraph(g); } }).catch(function () { /* graph is optional */ });
+    }).then(function (g) {
+      if (g) { updateGraph(g); } else { graphUnavailable(); }
+    }).catch(graphUnavailable);
   }
   function tick() {
     net.attempted = true;
@@ -1076,6 +1088,25 @@ export function startDashboard(options: DashboardOptions, engine: Engine): Promi
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const url = req.url ?? '/';
+      // A fresh nonce per response. The only inline script is the pre-paint theme
+      // bootstrap, and `script-src` admits /app.js by origin — nothing else can
+      // execute, including anything smuggled into a stored fact value.
+      const nonce = crypto.randomBytes(16).toString('base64');
+      const headers: Record<string, string> = {
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer',
+        'content-security-policy': [
+          "default-src 'none'",
+          `script-src 'self' 'nonce-${nonce}'`,
+          "style-src 'self'",
+          "img-src 'self' data:",
+          "connect-src 'self'",
+          "base-uri 'none'",
+          "form-action 'none'",
+          "frame-ancestors 'none'",
+        ].join('; '),
+      };
       // Same-origin assets only: the dashboard never reaches out to a CDN, so it
       // keeps working with no network at all.
       const assets: Record<string, { body: string; type: string }> = {
@@ -1084,26 +1115,26 @@ export function startDashboard(options: DashboardOptions, engine: Engine): Promi
       };
       const asset = assets[url];
       if (asset !== undefined) {
-        res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-store' });
+        res.writeHead(200, { ...headers, 'content-type': asset.type });
         res.end(asset.body);
         return;
       }
       if (url === '/' || url.startsWith('/index')) {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(PAGE_HTML);
+        res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8' });
+        res.end(PAGE_HTML.replace('__NONCE__', nonce));
         return;
       }
       if (url === '/api/data') {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(engine.dashboardData()));
         return;
       }
       if (url === '/api/graph') {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(engine.graphData()));
         return;
       }
-      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      res.writeHead(404, { ...headers, 'content-type': 'text/plain; charset=utf-8' });
       res.end('not found');
     });
     server.on('error', (err) => reject(err));
