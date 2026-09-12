@@ -170,6 +170,31 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_recall_runs_repo ON recall_runs(repo, created_at DESC);
     `);
+    // Knowledge is identified by (repo, kind, title). Databases written before
+    // that rule can hold duplicates, so collapse them (keep the newest — id order
+    // tracks write order) before the unique index starts enforcing it.
+    //
+    // Order matters twice over: the dedupe is skipped when there is nothing to
+    // collapse (the common case), and when it does run the FTS index is rebuilt
+    // first. `knowledge_fts` is an external-content table, so a legacy DB may
+    // hold rows the index never saw; deleting one of those makes FTS5 report a
+    // malformed image rather than deleting cleanly.
+    const duplicateGroups = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT repo, kind, title FROM knowledge GROUP BY repo, kind, title HAVING COUNT(*) > 1
+         )`,
+      )
+      .get() as { n: number };
+    if (duplicateGroups.n > 0) {
+      this.db.exec(`INSERT INTO knowledge_fts(knowledge_fts) VALUES('rebuild');`);
+      this.db.exec(`
+        DELETE FROM knowledge WHERE id NOT IN (
+          SELECT MAX(id) FROM knowledge GROUP BY repo, kind, title
+        );
+      `);
+    }
+    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_identity ON knowledge(repo, kind, title);`);
   }
 
   private prepared(sql: string): Statement {
@@ -359,6 +384,15 @@ export class Store {
     }
   }
 
+  /**
+   * Upsert one knowledge entry, identified by (repo, kind, title).
+   *
+   * The previous INSERT-only version meant an agent re-recording the same
+   * decision every session produced a duplicate row — which then ate recall
+   * budget and littered the graph. Now a re-record overwrites in place, and a
+   * byte-identical re-record is a no-op (no write, no `updated_at` churn), for
+   * the same reason re-pinning an unchanged fact records no history.
+   */
   saveKnowledge(
     repo: string,
     kind: KnowledgeKind,
@@ -367,11 +401,24 @@ export class Store {
     anchors: string[],
   ): KnowledgeRecord {
     this.validateKnowledge(kind, title, body);
+    const encoded = JSON.stringify(anchors);
+    const existing = this.prepared(
+      'SELECT body, anchors, updated_at FROM knowledge WHERE repo = ? AND kind = ? AND title = ?',
+    ).get(repo, kind, title) as { body: string; anchors: string; updated_at: string } | undefined;
+    if (existing !== undefined && existing.body === body && existing.anchors === encoded) {
+      return { kind, title, body, anchors, updatedAt: existing.updated_at };
+    }
     const now = new Date().toISOString();
     this.prepared(
-      `INSERT INTO knowledge (repo, kind, title, body, anchors, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(repo, kind, title, body, JSON.stringify(anchors), now);
-    return { kind, title, body, anchors, updatedAt: now };
+      `INSERT INTO knowledge (repo, kind, title, body, anchors, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(repo, kind, title) DO UPDATE SET
+         body = excluded.body, anchors = excluded.anchors, updated_at = excluded.updated_at`,
+    ).run(repo, kind, title, body, encoded, now);
+    const record: KnowledgeRecord = { kind, title, body, anchors, updatedAt: now };
+    if (existing !== undefined) {
+      record.updated = true;
+    }
+    return record;
   }
 
   knowledgeForRepo(repo: string, limit = 20): KnowledgeRecord[] {

@@ -64,6 +64,10 @@ export interface KnowledgeRecord {
   /** Owning repo (normalized path) — set by the store on read; used for
    *  cross-project filtering when recall runs without a repo context. */
   repo?: string;
+  /** Set by `saveKnowledge` when an existing entry with the same
+   *  (repo, kind, title) was overwritten — so a caller can say "updated"
+   *  instead of "added", the same way fast facts report a replaced value. */
+  updated?: boolean;
 }
 
 export interface SessionHandoff {
