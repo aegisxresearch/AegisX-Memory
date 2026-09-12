@@ -70,6 +70,15 @@ export interface KnowledgeRecord {
   updated?: boolean;
 }
 
+/** What a `saveSession` call wrote to the knowledge store, so a caller can
+ *  tell the agent whether it taught the memory anything new. */
+export interface SessionSaveSummary {
+  /** New knowledge entries created. */
+  decisionsRecorded: number;
+  /** Decisions whose sentence was already stored (upserted onto, not forked). */
+  decisionsAlreadyKnown: number;
+}
+
 export interface SessionHandoff {
   goal: string;
   facts: string[];

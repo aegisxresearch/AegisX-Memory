@@ -6,9 +6,9 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Engine, DEFAULT_TOKEN_BUDGET } from '../core/engine.js';
+import { Engine, DEFAULT_TOKEN_BUDGET, describeSessionSave } from '../core/engine.js';
 import { aegisxHome, dbPath, normalizeRepoPath } from '../core/paths.js';
-import { AegisxError } from '../core/types.js';
+import { AegisxError, type SessionSaveSummary } from '../core/types.js';
 import { binServerConfig, defaultServerConfig, parseAgentArg, renderConfig } from './mcp-config.js';
 import { SETUP_AGENTS, describeResult, describeRulesResult, installForAgent, installRulesForAgent, type SetupAgent } from './auto-setup.js';
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
@@ -304,15 +304,24 @@ program
           : fs.readFileSync(inputMode, 'utf8');
       const handoff = parseHandoffText(text);
       const engine = openEngine();
+      let summary: SessionSaveSummary;
       try {
-        engine.saveSession(process.cwd(), handoff);
+        summary = engine.saveSession(process.cwd(), handoff);
       } finally {
         engine.close();
       }
       writeJson(
-        { ok: true, saved: 'session handoff', repo: normalizeRepoPath(process.cwd()) },
+        {
+          ok: true,
+          saved: 'session handoff',
+          repo: normalizeRepoPath(process.cwd()),
+          decisions: {
+            recorded: summary.decisionsRecorded,
+            alreadyKnown: summary.decisionsAlreadyKnown,
+          },
+        },
         jsonOut,
-        () => process.stdout.write('session handoff saved\n'),
+        () => process.stdout.write(`session handoff saved${describeSessionSave(summary)}\n`),
       );
     });
   });

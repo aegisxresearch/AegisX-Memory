@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Engine } from '../src/core/engine.js';
-import { Store } from '../src/core/store.js';
+import { normalizeRepoPath } from '../src/core/paths.js';
+import { KNOWLEDGE_TITLE_MAX, Store } from '../src/core/store.js';
 import { AegisxError, type KnowledgeKind } from '../src/core/types.js';
 
 let workspace: string;
@@ -91,6 +92,142 @@ describe('knowledge — upsert identity (repo, kind, title)', () => {
       expect(result.knowledge[0]?.body).toBe('second note');
     } finally {
       reader.close();
+    }
+  });
+});
+
+describe('knowledge — the save path records handoff decisions', () => {
+  const handoff = (goal: string, decisions: string[]) => ({ goal, facts: [], decisions, nextSteps: [] });
+
+  it('records each decision as a decision entry owned by that repo', () => {
+    const engine = new Engine(dbFile);
+    try {
+      const summary = engine.saveSession(repo, handoff('harden auth', [
+        'use scrypt for new password hashes',
+        'keep the session in a signed cookie, not the database',
+      ]));
+
+      expect(summary).toEqual({ decisionsRecorded: 2, decisionsAlreadyKnown: 0 });
+      const rows = store.knowledgeForRepo(normalizeRepoPath(repo));
+      expect(rows.map((k) => k.kind)).toEqual(['decision', 'decision']);
+      expect(rows.map((k) => k.title).sort()).toEqual([
+        'keep the session in a signed cookie, not the database',
+        'use scrypt for new password hashes',
+      ]);
+      // the sentence is its own body: it is one self-contained decision
+      expect(rows.every((k) => k.body === k.title)).toBe(true);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('re-recording a decision in a later handoff refreshes it instead of forking', () => {
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, handoff('first pass', ['pick sqlite over postgres']));
+      const second = engine.saveSession(repo, handoff('second pass', ['pick sqlite over postgres']));
+
+      // nothing new was learned, but the store still holds exactly one copy
+      expect(second).toEqual({ decisionsRecorded: 0, decisionsAlreadyKnown: 1 });
+      expect(store.countKnowledge()).toBe(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('an identical re-save reports nothing new and cannot churn recency', () => {
+    const engine = new Engine(dbFile);
+    try {
+      const same = handoff('keep it', ['leave the dev server on port 5000']);
+      const first = engine.saveSession(repo, same);
+      const again = engine.saveSession(repo, same);
+
+      expect(first).toEqual({ decisionsRecorded: 1, decisionsAlreadyKnown: 0 });
+      expect(again).toEqual({ decisionsRecorded: 0, decisionsAlreadyKnown: 1 });
+      expect(store.countKnowledge()).toBe(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('the same sentence twice inside one handoff records one entry', () => {
+    const engine = new Engine(dbFile);
+    try {
+      const summary = engine.saveSession(repo, handoff('de-dupe', ['pin node 22', 'pin node 22']));
+      expect(summary).toEqual({ decisionsRecorded: 1, decisionsAlreadyKnown: 1 });
+      expect(store.countKnowledge()).toBe(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('a handoff with no decisions writes nothing', () => {
+    const engine = new Engine(dbFile);
+    try {
+      const summary = engine.saveSession(repo, handoff('just looking around', []));
+      expect(summary).toEqual({ decisionsRecorded: 0, decisionsAlreadyKnown: 0 });
+      expect(store.countKnowledge()).toBe(0);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('the same decision in two repos stays two entries', () => {
+    const other = path.join(workspace, 'other');
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, handoff('a', ['keep the WAL pragma on']));
+      engine.saveSession(other, handoff('b', ['keep the WAL pragma on']));
+      expect(store.countKnowledge()).toBe(2);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('a decision longer than a title records anyway: title truncated, body whole', () => {
+    const long = `${'refactor the billing pipeline '.repeat(12)}ENDMARKERQZX`;
+    expect(long.length).toBeGreaterThan(KNOWLEDGE_TITLE_MAX);
+
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, handoff('long one', [long]));
+      const row = store.knowledgeForRepo(normalizeRepoPath(repo))[0];
+      expect(row?.title.length).toBeLessThanOrEqual(KNOWLEDGE_TITLE_MAX);
+      expect(row?.title.endsWith('\u2026')).toBe(true);
+      expect(row?.body).toBe(long);
+      // the truncated-away tail stays searchable through the body
+      expect(engine.recall('ENDMARKERQZX', repo).knowledge).toHaveLength(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('a handoff refused for secret hygiene writes neither handoff nor knowledge', () => {
+    const engine = new Engine(dbFile);
+    try {
+      expect(() =>
+        engine.saveSession(repo, handoff('leak', ['rotate ghp_abcdefghijklmnopqrstuvwxyz0123456789'])),
+      ).toThrow(AegisxError);
+      expect(store.countKnowledge()).toBe(0);
+      expect(store.countSessions()).toBe(0);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('recall shows a handoff-derived decision once, without echoing title and body', () => {
+    const sentence = 'pin the CI runner to ubuntu-22.04 until the ARM image lands';
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, handoff('ci', [sentence]));
+      const markdown = engine.renderMarkdown(engine.recall('ci runner', repo));
+
+      expect(markdown).toContain('## Decisions & gotchas');
+      expect(markdown).toContain(`- (decision) ${sentence}`);
+      // the title/body form would print the same sentence twice within the line
+      expect(markdown).not.toContain('- (decision) **');
+    } finally {
+      engine.close();
     }
   });
 });

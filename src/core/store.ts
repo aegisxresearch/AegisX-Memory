@@ -32,6 +32,22 @@ export const FACT_HISTORY_MAX = 10;
 export const TELEMETRY_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
+/**
+ * Derive a knowledge title from a free-form sentence (a handoff decision line),
+ * guaranteed to satisfy `KNOWLEDGE_TITLE_MAX`.
+ *
+ * A decision is one self-contained sentence with no separate heading, so the
+ * sentence *is* the title — truncated only when it is longer than a title can
+ * be. Truncation is deterministic, so the same long sentence keeps the same
+ * identity across sessions and still upserts onto itself instead of forking.
+ */
+export function knowledgeTitle(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length <= KNOWLEDGE_TITLE_MAX
+    ? trimmed
+    : `${trimmed.slice(0, KNOWLEDGE_TITLE_MAX - 1).trimEnd()}\u2026`;
+}
+
 /** Row shape shared by every fact read that decorates in the previous value. */
 interface FactRow {
   key: string;

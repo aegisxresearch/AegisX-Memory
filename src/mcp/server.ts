@@ -6,7 +6,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { Engine, DEFAULT_TOKEN_BUDGET } from '../core/engine.js';
+import { Engine, DEFAULT_TOKEN_BUDGET, describeSessionSave } from '../core/engine.js';
 import { dbPath } from '../core/paths.js';
 
 interface TextContent {
@@ -120,7 +120,7 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'aegisxmemory_save',
-    'Persist a session handoff: goal, verified facts, decisions with reasons, and actionable next steps. Call at session end.',
+    'Persist a session handoff: goal, verified facts, decisions with reasons, and actionable next steps. Call at session end. Each decision is also recorded as searchable knowledge (upserted by its sentence), so it stays findable in later sessions.',
     {
       goal: z.string().describe('what this session was trying to achieve'),
       facts: z.array(z.string()).describe('verified facts (exact errors, paths, commands)'),
@@ -129,8 +129,8 @@ export async function startMcpServer(): Promise<void> {
     },
     async (handoff) => {
       try {
-        engine.saveSession(process.cwd(), handoff);
-        return textResult('session handoff saved');
+        const summary = engine.saveSession(process.cwd(), handoff);
+        return textResult(`session handoff saved${describeSessionSave(summary)}`);
       } catch (err) {
         return textResult(`error: ${errorMessage(err)}`, true);
       }

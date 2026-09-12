@@ -9,10 +9,10 @@
  * global recall is additionally filtered so other repos' knowledge never leaks.
  */
 import { normalizeRepoPath, parseAllowedRepos, assertRepoAllowed } from './paths.js';
-import { Store, ftsEscape } from './store.js';
+import { Store, ftsEscape, knowledgeTitle } from './store.js';
 import { Indexer, isSecretBearingFile } from '../indexer/indexer.js';
 import { containsSecret } from './secrets.js';
-import { AegisxError, type FactHistoryEntry, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats } from './types.js';
+import { AegisxError, type FactHistoryEntry, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats, type SessionSaveSummary } from './types.js';
 
 export const DEFAULT_TOKEN_BUDGET = 2_000;
 const CHARS_PER_TOKEN = 4; // rough estimator, deliberately conservative
@@ -103,7 +103,7 @@ export class Engine {
   saveSession(
     repoAbsPath: string,
     handoff: { goal: string; facts: string[]; decisions: string[]; nextSteps: string[] },
-  ): void {
+  ): SessionSaveSummary {
     const repo = normalizeRepoPath(repoAbsPath);
     this.guardRepo(repo);
     // Secret hygiene (RFC §5, STRIDE:I): the handoff is stored verbatim and
@@ -122,6 +122,24 @@ export class Engine {
       }
     }
     this.store.saveSession(repo, handoff);
+    // The handoff's `decisions` are the only place a decision is ever captured,
+    // and nothing wrote the knowledge store at all before this — so recall's
+    // "Decisions & gotchas" block and the dashboard graph were always empty.
+    // Each decision is upserted by its sentence, so a decision taken once stays
+    // findable in later sessions instead of living only inside the one handoff
+    // it was written in, and a decision repeated across sessions is refreshed
+    // rather than forked.
+    const before = this.store.countKnowledge();
+    for (const decision of handoff.decisions) {
+      this.store.saveKnowledge(repo, 'decision', knowledgeTitle(decision), decision, []);
+    }
+    // Created entries are the count delta; every other decision landed on a
+    // sentence that was already stored (identical, or overwritten).
+    const recorded = this.store.countKnowledge() - before;
+    return {
+      decisionsRecorded: recorded,
+      decisionsAlreadyKnown: handoff.decisions.length - recorded,
+    };
   }
 
   /** Read-only drift analysis between the index ledger and the disk (doctor). */
@@ -413,7 +431,7 @@ export class Engine {
     if (result.knowledge.length > 0) {
       parts.push('## Decisions & gotchas');
       for (const k of result.knowledge) {
-        parts.push(`- (${k.kind}) **${k.title}** — ${k.body}`);
+        parts.push(knowledgeLine(k));
       }
     }
     if (result.lastSession !== undefined) {
@@ -433,6 +451,33 @@ export class Engine {
     parts.push('<!-- AEGISX-MEMORY:END -->');
     return parts.join('\n');
   }
+}
+
+/** Human-readable suffix for a save, e.g. " — 2 decisions recorded". Empty when
+ *  the handoff carried no decisions worth reporting. */
+export function describeSessionSave(summary: SessionSaveSummary): string {
+  const parts: string[] = [];
+  if (summary.decisionsRecorded > 0) {
+    parts.push(`${summary.decisionsRecorded} decision${summary.decisionsRecorded === 1 ? '' : 's'} recorded`);
+  }
+  if (summary.decisionsAlreadyKnown > 0) {
+    parts.push(`${summary.decisionsAlreadyKnown} already known`);
+  }
+  return parts.length === 0 ? '' : ` — ${parts.join(', ')}`;
+}
+
+/**
+ * Render one knowledge entry as the single line recall shows.
+ *
+ * Handoff-derived entries (kind `decision`) carry the sentence as both title —
+ * it is what the graph labels the node with — and body, so printing the two
+ * would spend the recall budget on the same words twice.
+ */
+function knowledgeLine(k: KnowledgeRecord): string {
+  const stem = k.title.endsWith('\u2026') ? k.title.slice(0, -1) : k.title;
+  return k.body === stem || k.body.startsWith(stem)
+    ? `- (${k.kind}) ${k.body}`
+    : `- (${k.kind}) **${k.title}** — ${k.body}`;
 }
 
 function estimateTokens(

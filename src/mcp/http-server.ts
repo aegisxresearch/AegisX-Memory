@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { Engine, DEFAULT_TOKEN_BUDGET } from '../core/engine.js';
+import { Engine, DEFAULT_TOKEN_BUDGET, describeSessionSave } from '../core/engine.js';
 import { dbPath } from '../core/paths.js';
 
 export interface ServeOptions {
@@ -129,7 +129,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'aegisxmemory_save',
-    'Persist a session handoff: goal, verified facts, decisions with reasons, and actionable next steps. Call at session end.',
+    'Persist a session handoff: goal, verified facts, decisions with reasons, and actionable next steps. Call at session end. Each decision is also recorded as searchable knowledge (upserted by its sentence), so it stays findable in later sessions.',
     {
       goal: z.string().describe('what this session was trying to achieve'),
       facts: z.array(z.string()).describe('verified facts (exact errors, paths, commands)'),
@@ -138,8 +138,8 @@ export function buildMcpServer(): McpServer {
     },
     async (handoff) => {
       try {
-        engine.saveSession(process.cwd(), handoff);
-        return { content: [{ type: 'text' as const, text: 'session handoff saved' }] };
+        const summary = engine.saveSession(process.cwd(), handoff);
+        return { content: [{ type: 'text' as const, text: `session handoff saved${describeSessionSave(summary)}` }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `error: ${errorMessage(err)}` }], isError: true };
       }
