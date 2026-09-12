@@ -3,10 +3,16 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { startHttpServer, MAX_HTTP_BODY_BYTES, type ServeOptions } from '../src/mcp/http-server.js';
+import {
+  startHttpServer,
+  MAX_HTTP_BODY_BYTES,
+  renderMcpLandingPage,
+  wantsHtmlPage,
+  type ServeOptions,
+} from '../src/mcp/http-server.js';
 
 let workspace: string;
-const closeFns: Array<() => Promise<void>> = [];
+const closeFns: Array<() => void | Promise<void>> = [];
 
 async function start(opts: Partial<ServeOptions>): Promise<{ port: number }> {
   const h = await startHttpServer({ port: 0, host: '127.0.0.1', token: null, ...opts });
@@ -39,6 +45,82 @@ function post(port: number, body: unknown, headers: Record<string, string> = {},
     );
     req.on('error', reject);
     req.end(data);
+  });
+}
+
+/**
+ * A `GET /mcp` with an explicit Accept header (or none at all).
+ *
+ * A GET that a real MCP client sends opens a held-open server→client event
+ * stream, so the response never "ends". Resolve after a short quiet window
+ * instead of waiting for an event that will not come, and release the socket.
+ */
+function get(
+  port: number,
+  accept: string | undefined,
+  settleMs = 300,
+): Promise<{ status: number; text: string; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/mcp',
+        method: 'GET',
+        agent: false,
+        headers: {
+          ...(accept === undefined ? {} : { accept }),
+          host: `127.0.0.1:${String(port)}`,
+        },
+      },
+      (res) => {
+        let text = '';
+        let done = false;
+        const finish = (): void => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          req.destroy();
+          resolve({ status: res.statusCode ?? 0, text, headers: res.headers });
+        };
+        const timer = setTimeout(finish, settleMs);
+        res.on('data', (chunk: Buffer) => (text += chunk.toString('utf8')));
+        res.on('end', finish);
+      },
+    );
+    // An error after we already resolved (e.g. the socket we destroyed) is
+    // ignored by the promise; this listener only exists to stop it crashing.
+    req.on('error', (err: Error) => reject(err));
+    req.end();
+  });
+}
+
+/**
+ * Open a `GET /mcp` event stream and leave it open, the way an idle MCP client
+ * does. Resolves once the response headers arrive — the body never ends — and
+ * hands back a teardown so the suite can release the socket.
+ */
+function openStream(
+  port: number,
+  accept: string,
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; close: () => void }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/mcp',
+        method: 'GET',
+        agent: false,
+        headers: { accept, host: `127.0.0.1:${String(port)}` },
+      },
+      (res) => {
+        res.on('data', () => undefined); // drain, then hold
+        resolve({ status: res.statusCode ?? 0, headers: res.headers, close: () => req.destroy() });
+      },
+    );
+    req.on('error', reject);
+    req.end();
   });
 }
 
@@ -121,7 +203,9 @@ beforeAll(() => {
 
 afterAll(async () => {
   delete process.env['AEGISX_HOME'];
-  for (const close of closeFns) {
+  // LIFO: client sockets are registered after the servers that own them, and
+  // `server.close()` waits for open connections — so release the clients first.
+  for (const close of [...closeFns].reverse()) {
     await close();
   }
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -159,6 +243,36 @@ describe('aegisxmemory serve — HTTP MCP transport', () => {
     expect(recall.status).toBe(200);
     expect(recall.text).toContain('AEGISX-MEMORY:BEGIN');
     expect(recall.text).toContain('http transport works');
+  });
+
+  it('parity: exposes the same five tools as the stdio transport, graph included', async () => {
+    process.env['AEGISX_HOME'] = path.join(workspace, 'parity');
+    const { port } = await start({});
+
+    const list = await post(port, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    expect(list.status).toBe(200);
+    // The same set test/mcp-stdio.test.ts asserts over stdio — the two
+    // transports share one registration (src/mcp/tools.ts), and this locks it:
+    // the HTTP server used to be missing aegisxmemory_graph while the README
+    // promised five tools.
+    const names = [...new Set([...list.text.matchAll(/"name":"(aegisxmemory_[a-z_]+)"/g)].map((m) => m[1]))].sort();
+    expect(names).toEqual([
+      'aegisxmemory_graph',
+      'aegisxmemory_index',
+      'aegisxmemory_recall',
+      'aegisxmemory_remember',
+      'aegisxmemory_save',
+    ]);
+
+    // and the graph tool answers here, not only over stdio
+    const graph = await post(port, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'aegisxmemory_graph', arguments: {} },
+    });
+    expect(graph.status).toBe(200);
+    expect(graph.text).toContain('memory graph');
   });
 
   it('auth: 401 without token, 200 with bearer token', async () => {
@@ -223,5 +337,119 @@ describe('aegisxmemory serve — HTTP MCP transport', () => {
     const { port } = await start({});
     const ok = await post(port, INIT);
     expect(ok.status).toBe(200);
+  });
+
+  it('browser: GET /mcp with text/html gets an explanation page, not raw JSON', async () => {
+    process.env['AEGISX_HOME'] = path.join(workspace, 'landing');
+    const { port } = await start({});
+
+    // The exact Accept a browser sends when you paste the address in the bar.
+    const page = await get(port, 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8');
+    expect(page.status).toBe(406); // status is unchanged — only the body is friendly
+    expect(page.headers['content-type']).toContain('text/html');
+    expect(page.text).toContain('<!doctype html>');
+    expect(page.text).toContain('MCP endpoint, not a web page');
+    expect(page.text).toContain('aegisxmemory dashboard');
+    expect(page.text.trimStart().startsWith('<!doctype html>')).toBe(true);
+    // Not the raw JSON-RPC error body (which ends with `"id":null`).
+    expect(page.text).not.toContain('"id":null');
+
+    // The CSP header and the <style> tag must carry the SAME nonce, or the
+    // inline stylesheet is silently blocked and the page renders unstyled.
+    const csp = String(page.headers['content-security-policy']);
+    expect(csp).toContain("default-src 'none'");
+    const fromHeader = /style-src 'nonce-([^']+)'/.exec(csp)?.[1];
+    const fromStyle = /<style nonce="([^"]+)"/.exec(page.text)?.[1];
+    expect(fromHeader).toBeDefined();
+    expect(fromStyle).toBe(fromHeader);
+    expect(page.headers['x-content-type-options']).toBe('nosniff');
+    expect(page.headers['referrer-policy']).toBe('no-referrer');
+  });
+
+  it('agent: a client that accepts the event stream is never given HTML', async () => {
+    process.env['AEGISX_HOME'] = path.join(workspace, 'landing-agent');
+    const { port } = await start({});
+
+    // A real MCP client still reaches the transport and gets the event stream
+    // — not the page. (This response is deliberately held open.)
+    const asMcp = await get(port, 'application/json, text/event-stream');
+    expect(asMcp.headers['content-type']).toContain('text/event-stream');
+    expect(asMcp.text).not.toContain('<!doctype html>');
+
+    // A wildcard client, and a client with no Accept at all, are left alone too.
+    const wildcard = await get(port, '*/*');
+    expect(wildcard.status).toBe(406);
+    expect(wildcard.headers['content-type']).toContain('application/json');
+    expect(wildcard.text).toContain('text/event-stream');
+
+    // No Accept header at all is a spec violation; the transport answers 406
+    // itself. The HTML branch must never capture it.
+    const none = await get(port, undefined);
+    expect(none.status).toBe(406);
+    expect(none.headers['content-type']).toContain('application/json');
+    expect(none.text).not.toContain('<!doctype html>');
+  });
+
+  it('browser: the explanation is shown even when a bearer token is required', async () => {
+    process.env['AEGISX_HOME'] = path.join(workspace, 'landing-token');
+    const { port } = await start({ token: 'secret-token-123' });
+
+    const page = await get(port, 'text/html');
+    expect(page.status).toBe(406);
+    expect(page.text).toContain('a bearer token is required for MCP requests');
+
+    // The page explains the token; it does not hand out access.
+    const denied = await post(port, INIT);
+    expect(denied.status).toBe(401);
+    expect(denied.text).toContain('unauthorized');
+  });
+
+  it('concurrency: an idle held-open stream does not wedge later requests', async () => {
+    process.env['AEGISX_HOME'] = path.join(workspace, 'stream-held');
+    const { port } = await start({});
+
+    // An MCP client may open the server→client stream and keep it open while it
+    // works. The SDK gives a protocol object exactly one transport for its
+    // lifetime and `close()` never frees the slot, so a single shared server
+    // lost that slot for good: the next request — from any client — answered
+    // `500 Already connected to a transport` until the process restarted.
+    const held = await openStream(port, 'application/json, text/event-stream');
+    closeFns.push(held.close);
+    expect(held.status).toBe(200);
+    expect(held.headers['content-type']).toContain('text/event-stream');
+
+    const after = await post(port, INIT);
+    expect(after.status).toBe(200);
+    expect(after.text).toContain('"aegisx-memory"');
+
+    // Still open, and a second client is still fine.
+    const list = await post(port, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    expect(list.status).toBe(200);
+    expect(list.text).toContain('aegisxmemory_recall');
+  });
+});
+
+describe('MCP landing page — detection and escaping', () => {
+  it('captures browsers only, never anything that speaks MCP', () => {
+    expect(wantsHtmlPage('text/html')).toBe(true);
+    expect(wantsHtmlPage('text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')).toBe(true);
+    expect(wantsHtmlPage('application/json, text/event-stream')).toBe(false);
+    expect(wantsHtmlPage('text/event-stream')).toBe(false);
+    expect(wantsHtmlPage('*/*')).toBe(false);
+    expect(wantsHtmlPage(undefined)).toBe(false);
+    // A client willing to accept both is an MCP client — the stream wins.
+    expect(wantsHtmlPage('text/html, text/event-stream')).toBe(false);
+  });
+
+  it('escapes the address it prints instead of injecting it', () => {
+    const html = renderMcpLandingPage({
+      host: '127.0.0.1"><script>x</script>',
+      port: 3360,
+      token: false,
+      nonce: 'test-nonce',
+    });
+    expect(html).not.toContain('<script>x</script>');
+    expect(html).toContain('&quot;&gt;&lt;script&gt;');
+    expect(html).toContain('<style nonce="test-nonce">');
   });
 });

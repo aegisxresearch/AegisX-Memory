@@ -50,6 +50,10 @@ const PAGE_HTML = `<!doctype html>
     <span class="brand-dot" aria-hidden="true"></span>
     <h1>AegisX-Memory <span class="muted">dashboard</span></h1>
   </div>
+  <nav class="nav" aria-label="Dashboard views">
+    <button id="nav-overview" class="btn" type="button" aria-pressed="true" aria-controls="view-overview">Overview</button>
+    <button id="nav-memory" class="btn" type="button" aria-pressed="false" aria-controls="view-memory">Memory</button>
+  </nav>
   <div class="topbar-actions">
     <span id="status" class="status" role="status" aria-live="polite" data-state="stale">connecting…</span>
     <button id="theme" class="btn btn--ghost" type="button">Auto</button>
@@ -58,6 +62,7 @@ const PAGE_HTML = `<!doctype html>
 <main id="main">
   <p class="lede">Everything the local memory engine knows. Read-only · refreshes every 10s · nothing leaves this machine.</p>
 
+  <div class="view" id="view-overview">
   <section class="bento" id="cards" aria-label="Memory totals"></section>
 
   <section class="block" aria-labelledby="h-recall">
@@ -128,6 +133,47 @@ const PAGE_HTML = `<!doctype html>
     <div id="sessions"></div>
   </section>
 
+  </div>
+
+  <div class="view" id="view-memory" hidden>
+    <section class="block" aria-labelledby="h-mem">
+      <div class="block-head">
+        <h2 id="h-mem">Memory browser <span class="count" id="mem-count"></span></h2>
+        <div class="block-actions">
+          <label class="search search--repo" for="mem-repo">
+            <span class="hint">Repository</span>
+            <select id="mem-repo"></select>
+          </label>
+        </div>
+      </div>
+      <p class="hint">Every decision, gotcha and convention this repo has recorded — full text, no graph and no token budget. Delete with <code>aegisxmemory knowledge --forget &lt;id&gt;</code>.</p>
+      <div class="block-actions mem-tools">
+        <div class="seg" id="mem-kinds" role="group" aria-label="Filter knowledge by kind"></div>
+        <label class="search">
+          <span class="sr-only">Filter knowledge</span>
+          <input id="mem-search" type="search" placeholder="Filter title, body or id…" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <p class="hint" id="mem-note" aria-live="polite"></p>
+      <div id="mem-knowledge"></div>
+    </section>
+
+    <section class="block" aria-labelledby="h-mem-facts">
+      <div class="block-head">
+        <h2 id="h-mem-facts">Pinned facts in this repo <span class="count" id="mem-facts-count"></span></h2>
+      </div>
+      <div id="mem-facts"></div>
+    </section>
+
+    <section class="block" aria-labelledby="h-mem-sessions">
+      <div class="block-head">
+        <h2 id="h-mem-sessions">Handoffs in this repo <span class="count" id="mem-sessions-count"></span></h2>
+        <p class="hint">newest first, lists intact</p>
+      </div>
+      <div id="mem-sessions"></div>
+    </section>
+  </div>
+
   <footer>AegisX-Memory · local-first memory for AI coding agents · data lives in ~/.aegisx</footer>
 </main>
 <div id="tip" class="tip" role="tooltip" hidden></div>
@@ -164,6 +210,8 @@ const APP_CSS = `/* AegisX-Memory dashboard — semantic tokens, then components
   --ok-soft: #e0f5eb;
   --warn: #97610b;
   --warn-soft: #fdf1dd;
+  --danger: #b42318;
+  --danger-soft: #fdeceb;
   --info: #4338ca;
   --info-soft: #e9e8fd;
   /* ---- graph kinds ---- */
@@ -218,6 +266,8 @@ const APP_CSS = `/* AegisX-Memory dashboard — semantic tokens, then components
   --ok-soft: #0b2a20;
   --warn: #fbbf24;
   --warn-soft: #2c2007;
+  --danger: #fca5a5;
+  --danger-soft: #3a1414;
   --info: #a5b4fc;
   --info-soft: #1c2244;
   --kind-repo: #a5b4fc;
@@ -296,6 +346,11 @@ h1 { font-size: clamp(16px, 1.4vw + 12px, 20px); font-weight: 650; letter-spacin
 .btn:active { transform: translateY(0) scale(.985); }
 .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--info); }
 .btn--icon { width: 32px; padding: 5px 0; text-align: center; line-height: 1; font-size: 15px; }
+/* Destructive is the one thing that never uses the brand colour. */
+.btn--danger { color: var(--danger); border-color: var(--danger); background: var(--surface); }
+.btn--danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+.btn--quiet-danger { color: var(--danger); border-color: transparent; background: transparent; padding: 4px 9px; font-size: 12px; }
+.btn--quiet-danger:hover { background: var(--danger-soft); border-color: transparent; transform: none; }
 .seg { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
 .seg .btn { border-color: transparent; background: transparent; box-shadow: none; }
 .seg .btn:hover { background: var(--surface-hover); transform: none; }
@@ -507,6 +562,62 @@ kbd { font-family: var(--mono); font-size: 11px; line-height: 1; padding: 3px 5p
 .detail__text { font-family: var(--mono); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; background: var(--surface-2); border: 1px solid var(--hairline); border-radius: var(--radius); padding: 11px 13px; margin-bottom: 14px; color: var(--fg); }
 footer { margin-top: 44px; color: var(--fg-faint); font-size: 12px; }
 
+/* --------------------------------------------------------- nav + views */
+.nav {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px;
+  border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border);
+}
+.nav .btn { border-color: transparent; background: transparent; box-shadow: none; }
+.nav .btn:hover { background: var(--surface-hover); transform: none; }
+.nav .btn[aria-pressed="true"] {
+  background: var(--surface); color: var(--fg); border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.view[hidden] { display: none; }
+
+/* ------------------------------------------------------ memory browser */
+.search--repo { display: flex; align-items: center; gap: 9px; }
+.search--repo select {
+  font: inherit; font-size: 13px; padding: 8px 11px; min-width: 190px; max-width: 42vw;
+  color: var(--fg); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm);
+}
+.search--repo select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.mem-tools { margin: 14px 0 10px; }
+.mem { display: grid; gap: 12px; }
+/* The left rule is the knowledge kind, using tokens that already mean the same
+   thing: a gotcha is a warning, a lesson is an outcome, a convention is brand. */
+.mem-card {
+  display: grid; gap: 9px; padding: 15px 17px;
+  background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--kind-knowledge);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+}
+.mem-card[data-kind="decision"] { border-left-color: var(--info); }
+.mem-card[data-kind="gotcha"] { border-left-color: var(--warn); }
+.mem-card[data-kind="convention"] { border-left-color: var(--accent-2); }
+.mem-card[data-kind="lesson"] { border-left-color: var(--ok); }
+.mem-card--session { border-left-color: var(--kind-session); }
+.mem-card__head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.mem-card__title { font-size: 14px; font-weight: 620; line-height: 1.4; }
+.mem-card__body {
+  margin: 0; font-size: 13px; line-height: 1.6; color: var(--fg-muted);
+  white-space: pre-wrap; word-break: break-word;
+}
+.mem-card__meta {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--fg-faint);
+}
+.mem-card__id { font-family: var(--mono); color: var(--info); }
+.mem-list { margin: 2px 0 0; padding-left: 18px; font-size: 13px; color: var(--fg-muted); }
+.mem-list li { margin: 3px 0; }
+.mem-card__confirm {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 9px 11px; border-radius: var(--radius);
+  background: var(--danger-soft); border: 1px solid var(--danger);
+}
+.mem-card__confirm .hint { color: var(--danger); font-weight: 600; }
+.mem-card[data-pending="true"] { opacity: .55; }
+
 @media (max-width: 760px) {
   body { padding: 0 14px 56px; }
   .card--hero { grid-column: span 1; }
@@ -514,6 +625,9 @@ footer { margin-top: 44px; color: var(--fg-faint); font-size: 12px; }
   .block-head { align-items: flex-start; }
   .block-actions { width: 100%; justify-content: space-between; }
   .graph { height: auto; }
+  .topbar { flex-wrap: wrap; gap: 10px; }
+  .search--repo { width: 100%; }
+  .search--repo select { max-width: none; width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -1899,6 +2013,376 @@ const APP_JS = `'use strict';
     });
   }
 
+  // --------------------------------------------------------------- views
+  /* Two views over the same data. Overview is the shape of memory (totals,
+     chart, graph, tables); Memory is the one place the knowledge store can be
+     read as text, without the graph. */
+  var VIEW_KEY = 'aegisx-view';
+  var VIEWS = ['overview', 'memory'];
+  var currentView = 'overview';
+  function storedView() {
+    try { var v = localStorage.getItem(VIEW_KEY); return VIEWS.indexOf(v) >= 0 ? v : 'overview'; }
+    catch (e) { return 'overview'; }
+  }
+  function hashView() {
+    // A typeof guard keeps this safe where location does not exist (the test
+    // harness) — and a deep link is a nicety, never a requirement to load.
+    try {
+      if (typeof location === 'undefined' || !location.hash) { return null; }
+      var h = String(location.hash).replace(/^#/, '');
+      return VIEWS.indexOf(h) >= 0 ? h : null;
+    } catch (e) { return null; }
+  }
+  function showView(name, persist) {
+    if (VIEWS.indexOf(name) < 0) { name = 'overview'; }
+    currentView = name;
+    for (var i = 0; i < VIEWS.length; i++) {
+      var panel = byId('view-' + VIEWS[i]);
+      if (panel) { panel.hidden = VIEWS[i] !== name; }
+      var btn = byId('nav-' + VIEWS[i]);
+      if (btn) { btn.setAttribute('aria-pressed', VIEWS[i] === name ? 'true' : 'false'); }
+    }
+    if (persist) { try { localStorage.setItem(VIEW_KEY, name); } catch (e) { /* private mode */ } }
+    if (name === 'memory') { loadMemory(); }
+  }
+
+  // ------------------------------------------------------ memory browser
+  /* The read side the knowledge store was missing: every decision, gotcha,
+     convention and lesson for one repo, with full text, plus that repo's pinned
+     facts and its handoffs — no graph, no token budget, no ranking. Read-only,
+     like the rest of the dashboard; deletion stays in the knowledge command. */
+  var MEM_KINDS = ['decision', 'gotcha', 'convention', 'lesson'];
+  var MEM_COLOR = { decision: 'var(--info)', gotcha: 'var(--warn)', convention: 'var(--accent-2)', lesson: 'var(--ok)' };
+  var MEM = {
+    repo: null, loaded: null, data: null, error: null, loading: false, off: {}, query: '',
+    // Deletion is the one write this page can make, so its two steps (ask, then
+    // do) live in state rather than in the DOM: a re-render cannot lose a
+    // confirmation the reader is still looking at, and a poll cannot fire one.
+    confirmId: null, deletingId: null, notice: null,
+  };
+
+  function memKindCounts() {
+    var all = (MEM.data && MEM.data.knowledge) || [];
+    var out = {};
+    for (var i = 0; i < all.length; i++) { out[all[i].kind] = (out[all[i].kind] || 0) + 1; }
+    return out;
+  }
+  function memEntries() {
+    var all = (MEM.data && MEM.data.knowledge) || [];
+    var q = MEM.query.trim().toLowerCase();
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+      var k = all[i];
+      if (MEM.off[k.kind]) { continue; }
+      if (q) {
+        var hay = (k.kind + ' ' + k.title + ' ' + k.body + ' #' + (k.id === undefined ? '' : k.id)).toLowerCase();
+        if (hay.indexOf(q) < 0) { continue; }
+      }
+      out.push(k);
+    }
+    return out;
+  }
+  function deleteKnowledge(k) {
+    if (k.id === undefined) { return; }
+    MEM.confirmId = null;
+    MEM.deletingId = k.id;
+    MEM.notice = null;
+    renderMemory();
+    fetch('/api/knowledge/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: k.id }),
+    })
+      .then(function (r) {
+        return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+      })
+      .then(function (res) {
+        MEM.deletingId = null;
+        if (!res.ok) {
+          MEM.error = (res.body && res.body.error) || 'delete failed';
+          renderMemory();
+          return;
+        }
+        // Drop it locally so the list is right at once, then re-read the counts
+        // from the server — the page must not report a total it guessed.
+        var all = (MEM.data && MEM.data.knowledge) || [];
+        var kept = [];
+        for (var i = 0; i < all.length; i++) { if (all[i].id !== k.id) { kept.push(all[i]); } }
+        if (MEM.data) {
+          MEM.data.knowledge = kept;
+          MEM.data.counts.knowledge = Math.max(0, (MEM.data.counts.knowledge || 1) - 1);
+        }
+        MEM.error = null;
+        MEM.notice = 'deleted #' + k.id + ' — ' + k.kind + ': ' + k.title;
+        renderMemory();
+        fetchMemory(true);
+      })
+      .catch(function () {
+        MEM.deletingId = null;
+        MEM.error = 'cannot reach the server';
+        renderMemory();
+      });
+  }
+  function deleteControls(k) {
+    if (k.id === undefined) { return null; }
+    var box = el('div', 'mem-card__confirm');
+    box.appendChild(el('span', 'hint', 'Delete #' + k.id + '?'));
+    var yes = el('button', 'btn btn--danger', 'confirm delete');
+    yes.type = 'button';
+    yes.setAttribute('aria-label', 'Confirm deleting entry #' + k.id + ': ' + k.title);
+    yes.addEventListener('click', function () { deleteKnowledge(k); });
+    var no = el('button', 'btn btn--ghost', 'cancel');
+    no.type = 'button';
+    no.addEventListener('click', function () { MEM.confirmId = null; renderMemory(); });
+    box.appendChild(yes);
+    box.appendChild(no);
+    box.appendChild(el('span', 'hint', 'deletion is permanent — the CLI can do it too: knowledge --forget ' + k.id));
+    return box;
+  }
+  function knowledgeCard(k) {
+    var card = el('article', 'mem-card');
+    card.setAttribute('data-kind', k.kind);
+    var head = el('div', 'mem-card__head');
+    var chip = el('span', 'chip chip--static');
+    var dot = el('span', 'chip__dot');
+    dot.style.background = MEM_COLOR[k.kind] || 'var(--kind-knowledge)';
+    chip.appendChild(dot);
+    chip.appendChild(el('span', null, k.kind));
+    head.appendChild(chip);
+    head.appendChild(el('span', 'mem-card__title', k.title));
+    head.appendChild(copyButton(k.kind + ': ' + k.title + '\\n\\n' + k.body));
+    if (k.id !== undefined && MEM.confirmId !== k.id) {
+      var del = el('button', 'btn btn--quiet-danger', 'delete');
+      del.type = 'button';
+      del.setAttribute('aria-label', 'Delete entry #' + k.id + ': ' + k.title);
+      del.addEventListener('click', function () { MEM.confirmId = k.id; MEM.notice = null; renderMemory(); });
+      head.appendChild(del);
+    }
+    card.appendChild(head);
+    if (k.body) { card.appendChild(el('p', 'mem-card__body', k.body)); }
+    var meta = el('div', 'mem-card__meta');
+    if (k.id !== undefined) { meta.appendChild(el('span', 'mem-card__id', '#' + k.id)); }
+    if (k.repo) { meta.appendChild(el('span', 'repo', k.repo)); }
+    if (k.anchors && k.anchors.length) { meta.appendChild(el('span', null, k.anchors.join(' · '))); }
+    if (k.updatedAt) { meta.appendChild(el('span', null, String(k.updatedAt).slice(0, 16).replace('T', ' '))); }
+    if (meta.childElementCount) { card.appendChild(meta); }
+    if (k.id !== undefined && k.id === MEM.deletingId) { card.setAttribute('data-pending', 'true'); }
+    if (k.id !== undefined && MEM.confirmId === k.id) {
+      var controls = deleteControls(k);
+      if (controls) { card.appendChild(controls); }
+    }
+    return card;
+  }
+  function appendNoteLines(lines, label, items) {
+    if (!items || !items.length) { return; }
+    lines.push('', label + ':');
+    for (var i = 0; i < items.length; i++) { lines.push('- ' + items[i]); }
+  }
+  function handoffText(s) {
+    var lines = [s.goal, '', 'repo: ' + s.repo, 'at: ' + String(s.createdAt || '').slice(0, 16).replace('T', ' ')];
+    appendNoteLines(lines, 'Facts', s.facts);
+    appendNoteLines(lines, 'Decisions', s.decisions);
+    appendNoteLines(lines, 'Gotchas', s.gotchas);
+    appendNoteLines(lines, 'Conventions', s.conventions);
+    appendNoteLines(lines, 'Next steps', s.nextSteps);
+    return lines.join('\\n');
+  }
+  function appendNotes(card, label, items) {
+    if (!items || !items.length) { return; }
+    card.appendChild(el('p', 'card__k', label + ' (' + items.length + ')'));
+    var ul = el('ul', 'mem-list');
+    for (var i = 0; i < items.length; i++) { ul.appendChild(el('li', null, items[i])); }
+    card.appendChild(ul);
+  }
+  function handoffCard(s) {
+    var card = el('article', 'mem-card mem-card--session');
+    var head = el('div', 'mem-card__head');
+    head.appendChild(el('span', 'mem-card__title', s.goal));
+    head.appendChild(copyButton(handoffText(s)));
+    card.appendChild(head);
+    if (s.createdAt) {
+      var meta = el('div', 'mem-card__meta');
+      meta.appendChild(el('span', null, String(s.createdAt).slice(0, 16).replace('T', ' ')));
+      card.appendChild(meta);
+    }
+    appendNotes(card, 'Facts', s.facts);
+    appendNotes(card, 'Decisions', s.decisions);
+    appendNotes(card, 'Gotchas', s.gotchas);
+    appendNotes(card, 'Conventions', s.conventions);
+    appendNotes(card, 'Next steps', s.nextSteps);
+    return card;
+  }
+  function memNoteText(counts, loaded, rows) {
+    if (MEM.error || !MEM.data) { return ''; }
+    var parts = loaded.length < counts.knowledge
+      ? ['showing the newest ' + loaded.length + ' of ' + counts.knowledge + ' entries stored for this repo']
+      : [counts.knowledge + (counts.knowledge === 1 ? ' entry' : ' entries') + ' stored for this repo'];
+    if (rows.length !== loaded.length) { parts.push(rows.length + ' shown after filters'); }
+    return parts.join(' · ') + '.';
+  }
+  /* What just happened outranks what is stored: a deletion the reader cannot see
+     confirmed is a deletion they will wonder about. */
+  function memNote(counts, loaded, rows) {
+    if (MEM.error) { return MEM.error; }
+    if (MEM.data === null) { return MEM.loading ? 'Loading…' : ''; }
+    var line = memNoteText(counts, loaded, rows);
+    return MEM.notice === null ? line : MEM.notice + ' · ' + line;
+  }
+  function buildRepoPicker(repos) {
+    var sel = byId('mem-repo');
+    if (!sel) { return; }
+    section(sel, JSON.stringify(repos), function (sel) {
+      clear(sel);
+      for (var i = 0; i < repos.length; i++) {
+        var opt = el('option');
+        opt.value = repos[i].repo;
+        opt.textContent = repos[i].repo;
+        sel.appendChild(opt);
+      }
+    });
+    // Kept in step outside section(), which skips rebuilding when the list is
+    // unchanged — the selection still has to follow the active repo.
+    if (sel.value !== String(MEM.repo || '')) { sel.value = String(MEM.repo || ''); }
+  }
+  function toggleMemKind(kind, btn) {
+    MEM.off[kind] = !MEM.off[kind];
+    btn.setAttribute('aria-pressed', MEM.off[kind] ? 'false' : 'true');
+    MEM.confirmId = null;
+    MEM.notice = null;
+    renderMemory();
+  }
+  function buildMemKinds(counts) {
+    var host = byId('mem-kinds');
+    if (!host) { return; }
+    var offSig = MEM_KINDS.map(function (k) { return MEM.off[k] ? '0' : '1'; }).join('');
+    section(host, JSON.stringify(counts) + '|' + offSig, function (host) {
+      clear(host);
+      for (var i = 0; i < MEM_KINDS.length; i++) {
+        (function (kind) {
+          var b = el('button', 'chip');
+          b.type = 'button';
+          b.setAttribute('aria-pressed', MEM.off[kind] ? 'false' : 'true');
+          var dot = el('span', 'chip__dot');
+          dot.style.background = MEM_COLOR[kind];
+          b.appendChild(dot);
+          b.appendChild(el('span', null, kind + (counts[kind] ? ' ' + counts[kind] : '')));
+          b.addEventListener('click', function () { toggleMemKind(kind, b); });
+          host.appendChild(b);
+        })(MEM_KINDS[i]);
+      }
+    });
+  }
+  function renderMemory() {
+    var repos = STATE.repos || [];
+    var badge = byId('mem-count');
+    var note = byId('mem-note');
+    if (!repos.length) {
+      if (badge) { badge.textContent = ''; }
+      if (note) { note.textContent = ''; }
+      var none = 'No repository recorded yet — index a project with “aegisxmemory index .” first.';
+      section(byId('mem-knowledge'), 'norepo', function (host) { host.appendChild(el('p', 'empty', none)); });
+      section(byId('mem-facts'), 'norepo', function (host) { host.appendChild(el('p', 'empty', none)); });
+      section(byId('mem-sessions'), 'norepo', function (host) { host.appendChild(el('p', 'empty', none)); });
+      return;
+    }
+    buildRepoPicker(repos);
+    var data = MEM.data;
+    var counts = (data && data.counts) || { facts: 0, knowledge: 0, sessions: 0 };
+    var loaded = (data && data.knowledge) || [];
+    var rows = memEntries();
+    buildMemKinds(memKindCounts());
+    if (badge) { badge.textContent = counts.knowledge ? counts.knowledge + ' entries' : ''; }
+    if (note) {
+      var text = memNote(counts, loaded, rows);
+      if (note.textContent !== text) { note.textContent = text; }
+    }
+    section(byId('mem-knowledge'), JSON.stringify({
+      repo: MEM.repo, rows: rows, err: MEM.error, loading: MEM.loading,
+      confirm: MEM.confirmId, deleting: MEM.deletingId, notice: MEM.notice,
+    }), function (host) {
+      if (MEM.error) { host.appendChild(el('p', 'empty', MEM.error)); return; }
+      if (MEM.data === null) { host.appendChild(el('p', 'empty', MEM.loading ? 'Loading…' : 'No data yet.')); return; }
+      if (!loaded.length) {
+        host.appendChild(el('p', 'empty', 'Nothing recorded for this repo yet — “aegisxmemory save” records decisions, gotchas and conventions.'));
+        return;
+      }
+      if (!rows.length) { host.appendChild(el('p', 'empty', 'No entry matches the current filters.')); return; }
+      var wrap = el('div', 'mem');
+      for (var i = 0; i < rows.length; i++) { wrap.appendChild(knowledgeCard(rows[i])); }
+      host.appendChild(wrap);
+    });
+    var facts = (data && data.facts) || [];
+    var factsBadge = byId('mem-facts-count');
+    if (factsBadge) { factsBadge.textContent = counts.facts ? counts.facts + ' pinned' : ''; }
+    section(byId('mem-facts'), JSON.stringify(facts) + '|' + MEM.error + '|' + MEM.loading, function (host) {
+      if (MEM.error) { host.appendChild(el('p', 'empty', MEM.error)); return; }
+      if (!facts.length) {
+        host.appendChild(el('p', 'hint', 'No fact is pinned to this repository.'));
+        return;
+      }
+      var p = el('div', 'panel');
+      p.appendChild(factList(facts));
+      host.appendChild(p);
+    });
+    var sessions = (data && data.sessions) || [];
+    var sessionsBadge = byId('mem-sessions-count');
+    if (sessionsBadge) { sessionsBadge.textContent = counts.sessions ? counts.sessions + ' handoffs' : ''; }
+    section(byId('mem-sessions'), JSON.stringify(sessions) + '|' + MEM.error + '|' + MEM.loading, function (host) {
+      if (MEM.error) { host.appendChild(el('p', 'empty', MEM.error)); return; }
+      if (!sessions.length) {
+        host.appendChild(el('p', 'hint', 'No handoff is stored for this repository.'));
+        return;
+      }
+      var wrap = el('div', 'mem');
+      for (var i = 0; i < sessions.length; i++) { wrap.appendChild(handoffCard(sessions[i])); }
+      host.appendChild(wrap);
+    });
+  }
+  function fetchMemory(silent) {
+    if (MEM.repo === null || MEM.loading) { return; }
+    var asked = MEM.repo;
+    MEM.loading = true;
+    if (!silent) { MEM.error = null; renderMemory(); }
+    fetch('/api/memory?repo=' + encodeURIComponent(asked), { cache: 'no-store' })
+      .then(function (r) {
+        return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+      })
+      .then(function (res) {
+        MEM.loading = false;
+        if (asked !== MEM.repo) { return; } // a newer selection won
+        if (res.ok) { MEM.data = res.body; MEM.error = null; MEM.loaded = asked; }
+        else { MEM.data = null; MEM.error = (res.body && res.body.error) || 'cannot read this repository'; }
+        renderMemory();
+      })
+      .catch(function () {
+        MEM.loading = false;
+        if (asked !== MEM.repo) { return; }
+        MEM.data = null;
+        MEM.error = 'cannot reach the server';
+        renderMemory();
+      });
+  }
+  function loadMemory() {
+    var repos = STATE.repos || [];
+    if (!repos.length) { MEM.repo = null; MEM.data = null; renderMemory(); return; }
+    var known = false;
+    for (var i = 0; i < repos.length; i++) { if (repos[i].repo === MEM.repo) { known = true; } }
+    if (!known) { MEM.repo = repos[0].repo; MEM.loaded = null; MEM.data = null; }
+    if (MEM.loaded === MEM.repo) { renderMemory(); return; }
+    fetchMemory(false);
+  }
+  function selectRepo(repo) {
+    if (!repo || repo === MEM.repo) { return; }
+    MEM.repo = repo;
+    MEM.loaded = null;
+    MEM.data = null;
+    MEM.error = null;
+    // A pending confirmation belongs to the page it was asked on.
+    MEM.confirmId = null;
+    MEM.notice = null;
+    loadMemory();
+  }
+
   // --------------------------------------------------------------- render
   function render(data) {
     STATE.facts = data.facts || [];
@@ -1910,6 +2394,9 @@ const APP_JS = `'use strict';
     renderRepos(STATE.repos);
     renderFacts();
     renderSessions(STATE.sessions);
+    // The memory view is repo-scoped and fetched on demand, so it waits for the
+    // repo list (first tick) and then keeps itself fresh with the poll.
+    if (currentView === 'memory') { loadMemory(); }
   }
   function renderSkeletons() {
     var cards = byId('cards');
@@ -1940,6 +2427,8 @@ const APP_JS = `'use strict';
       net.lastGood = Date.now();
       render(data);
       loadGraph();
+      // Keeps the open memory page in step with the rest of the dashboard.
+      if (currentView === 'memory') { fetchMemory(true); }
     }).catch(function () {
       net.live = false;
     }).then(updateStatus);
@@ -2006,6 +2495,25 @@ const APP_JS = `'use strict';
     commitReadout(READOUT_HINT);
     buildKindFilters();
 
+    var navOverview = byId('nav-overview');
+    if (navOverview) { navOverview.addEventListener('click', function () { showView('overview', true); }); }
+    var navMemory = byId('nav-memory');
+    if (navMemory) { navMemory.addEventListener('click', function () { showView('memory', true); }); }
+    var repoPick = byId('mem-repo');
+    if (repoPick) { repoPick.addEventListener('change', function () { selectRepo(repoPick.value); }); }
+    var memSearch = byId('mem-search');
+    if (memSearch) {
+      memSearch.addEventListener('input', function () {
+        MEM.query = memSearch.value;
+        MEM.confirmId = null;
+        MEM.notice = null;
+        renderMemory();
+      });
+    }
+    // A deep link wins over the stored choice; persist stays off so merely
+    // opening the page never rewrites the user's preference.
+    showView(hashView() || storedView(), false);
+
     renderSkeletons();
     updateStatus();
     tick();
@@ -2027,6 +2535,55 @@ function openBrowser(url: string): void {
   }
 }
 
+/**
+ * Body cap for the dashboard's single write endpoint. A delete carries an id and
+ * nothing else, so this sits far below the MCP server's 1 MB ceiling — the point
+ * is that the read is bounded *before* it is buffered.
+ */
+export const MAX_DASHBOARD_BODY_BYTES = 4 * 1024;
+
+/**
+ * Read a body up to `limit`, resolving `null` when it exceeds the cap or the
+ * socket fails. Nothing is buffered past the cap.
+ */
+function readCappedBody(req: http.IncomingMessage, limit: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let received = 0;
+    let tooBig = false;
+    req.on('data', (chunk: Buffer) => {
+      if (tooBig) {
+        return;
+      }
+      received += chunk.length;
+      if (received > limit) {
+        tooBig = true;
+        chunks.length = 0;
+        req.resume(); // drain what the client already sent, then let it close
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(tooBig ? null : Buffer.concat(chunks).toString('utf8')));
+    req.on('error', () => resolve(null));
+  });
+}
+
+/**
+ * DNS-rebinding guard, mirroring the MCP HTTP server's: the `Host` header must
+ * name this machine. A page that resolves its own domain to 127.0.0.1 would
+ * otherwise be served this dashboard — and, since v1.28, be able to delete from
+ * it. HTTP/1.0 clients send no Host at all, and the bind guard already limits
+ * reachability to localhost, so an absent header is not a refusal.
+ */
+function isLocalHostHeader(host: string | undefined): boolean {
+  if (host === undefined) {
+    return true;
+  }
+  const hostname = host.split(':')[0] ?? '';
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+}
+
 /** Start the dashboard server; resolves once listening. Returns a stopper. */
 export function startDashboard(options: DashboardOptions, engine: Engine): Promise<{ url: string; stop(): Promise<void> }> {
   if (options.host !== '127.0.0.1' && options.host !== 'localhost') {
@@ -2035,6 +2592,11 @@ export function startDashboard(options: DashboardOptions, engine: Engine): Promi
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const url = req.url ?? '/';
+      if (!isLocalHostHeader(req.headers.host)) {
+        res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'forbidden host (DNS-rebinding guard)' }));
+        return;
+      }
       // A fresh nonce per response. The only inline script is the pre-paint theme
       // bootstrap, and `script-src` admits /app.js by origin — nothing else can
       // execute, including anything smuggled into a stored fact value.
@@ -2079,6 +2641,109 @@ export function startDashboard(options: DashboardOptions, engine: Engine): Promi
       if (url === '/api/graph') {
         res.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(engine.graphData()));
+        return;
+      }
+      // Repo-scoped, and only fetched when the memory browser asks for a repo —
+      // knowledge bodies are large, so they stay out of the 10s poll payload.
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) {
+        const asked = new URL(url, 'http://localhost').searchParams.get('repo');
+        // The status is decided before any header is written: `repoMemory` throws
+        // for a repo the policy refuses, and a 200 written first would make the
+        // correction throw ERR_HTTP_HEADERS_SENT and leave the request hanging.
+        let status = 200;
+        let payload: unknown;
+        if (asked === null || asked.trim() === '') {
+          status = 400;
+          payload = { error: 'missing repo parameter' };
+        } else {
+          try {
+            payload = engine.repoMemory(asked);
+          } catch (err) {
+            // A repo the policy hides is not an empty page — refuse it out loud.
+            // Every refusal here is "this repo cannot be read", so one status fits.
+            status = 403;
+            payload = { error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+        res.writeHead(status, { ...headers, 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(payload));
+        return;
+      }
+      // The dashboard's one write: deleting a knowledge entry. It is a POST with
+      // a JSON body on purpose — that is the CSRF defence, not a detail. Nothing
+      // here is authenticated, so the guarantee is that a page the user did not
+      // open cannot reach it:
+      //  - an HTML form can only send urlencoded/text/plain, and a `fetch` with
+      //    an `application/json` body needs a CORS preflight this server never
+      //    grants (no CORS headers, and OPTIONS is answered 405);
+      //  - a browser-sent `Origin` must match this exact origin, port included,
+      //    so another local app on a different port cannot delete your memory;
+      //  - `Sec-Fetch-Site` must say `same-origin` whenever a browser sends it.
+      // None of these relies on the caller being trustworthy; a non-browser
+      // client (curl, a script) simply has no Origin/Sec-Fetch-Site to check.
+      if (url === '/api/knowledge/delete') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { ...headers, 'content-type': 'application/json; charset=utf-8', allow: 'POST' });
+          res.end(JSON.stringify({ error: 'method not allowed — deletion is a POST' }));
+          return;
+        }
+        if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+          res.writeHead(415, { ...headers, 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Content-Type must be application/json' }));
+          return;
+        }
+        const origin = req.headers['origin'];
+        const own = `http://${String(req.headers['host'] ?? '')}`;
+        const site = req.headers['sec-fetch-site'];
+        if (
+          (typeof origin === 'string' && origin !== own) ||
+          (typeof site === 'string' && site !== 'same-origin')
+        ) {
+          res.writeHead(403, { ...headers, 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'cross-origin deletion refused' }));
+          return;
+        }
+        void (async () => {
+          const body = await readCappedBody(req, MAX_DASHBOARD_BODY_BYTES);
+          // Decided before any header is written — a 200 sent first would make
+          // the correction below throw and leave the request hanging.
+          let status = 200;
+          let payload: unknown;
+          let id: number | undefined;
+          if (body === null) {
+            status = 413;
+            payload = { error: `request body too large or unreadable (>${MAX_DASHBOARD_BODY_BYTES} bytes)` };
+          } else {
+            try {
+              const parsed = JSON.parse(body) as { id?: unknown };
+              const candidate = parsed === null ? undefined : parsed.id;
+              if (typeof candidate !== 'number' || !Number.isInteger(candidate) || candidate <= 0) {
+                throw new AegisxError('user', 'body must be {"id": <positive integer>}');
+              }
+              id = candidate;
+            } catch (err) {
+              status = 400;
+              payload = { error: err instanceof Error ? err.message : String(err) };
+            }
+          }
+          if (status === 200 && id !== undefined) {
+            try {
+              if (engine.forgetKnowledge(id)) {
+                payload = { ok: true, id, deleted: true };
+              } else {
+                status = 404;
+                payload = { error: `no knowledge entry with id ${id}` };
+              }
+            } catch (err) {
+              // Same posture as the read side: a policy-hidden repo is refused
+              // out loud, and its row is left alone.
+              status = 403;
+              payload = { error: err instanceof Error ? err.message : String(err) };
+            }
+          }
+          res.writeHead(status, { ...headers, 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(payload));
+        })();
         return;
       }
       res.writeHead(404, { ...headers, 'content-type': 'text/plain; charset=utf-8' });

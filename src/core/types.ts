@@ -56,6 +56,10 @@ export interface SymbolRecord {
 }
 
 export interface KnowledgeRecord {
+  /** Primary key in the knowledge table. Stable across an upsert (the row is
+   *  updated in place, not re-inserted), and the handle `aegisxmemory
+   *  knowledge --forget <id>` deletes by. Present on store reads. */
+  id?: number;
   kind: KnowledgeKind;
   title: string;
   body: string;
@@ -107,6 +111,61 @@ export interface HandoffNotes {
   decisions: string[];
   gotchas: string[];
   conventions: string[];
+}
+
+/** A stored handoff row with its lists intact — `export` reads the notes
+ *  themselves, where `recentSessions` only needs their lengths. */
+export interface SessionRecord {
+  repo: string;
+  goal: string;
+  facts: string[];
+  decisions: string[];
+  gotchas: string[];
+  conventions: string[];
+  nextSteps: string[];
+  createdAt: string;
+}
+
+/**
+ * Everything one repository remembers, as the dashboard's memory browser reads
+ * it: its knowledge with bodies intact, its pinned facts and its handoffs — no
+ * graph, no token budget.
+ *
+ * `counts` are the repository's true totals while the arrays are capped, so the
+ * reader can say "showing 200 of 1,204" instead of implying it showed all of it.
+ */
+export interface RepoMemory {
+  repo: string;
+  facts: MemoryFact[];
+  knowledge: KnowledgeRecord[];
+  sessions: SessionRecord[];
+  counts: { facts: number; knowledge: number; sessions: number };
+}
+
+/** One repository's telemetry rollup, as both the dashboard and `export` read it. */
+export interface RepoSummary {
+  repo: string;
+  files: number;
+  symbols: number;
+  scans: number;
+  recalls: number;
+  hitRate: number | null;
+  tokensSavedEstimate: number | null;
+}
+
+/** Whole-memory dump for `aegisxmemory export` — backup, portability, review.
+ *  The lists are the owner's view of the store (all repos, no budget), not the
+ *  ranked window recall composes for an agent. */
+export interface MemoryExport {
+  generatedAt: string;
+  /** Per-store cap applied to the lists below. A list that reaches this length
+   *  is truncated, which is why the number travels with the dump. */
+  rowLimit: number;
+  totals: { repos: number; facts: number; knowledge: number; sessions: number };
+  repos: RepoSummary[];
+  facts: MemoryFact[];
+  knowledge: KnowledgeRecord[];
+  sessions: SessionRecord[];
 }
 
 export interface ScanStats {

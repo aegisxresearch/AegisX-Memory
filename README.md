@@ -40,7 +40,16 @@ From now on the memory loop is automatic (the `--rules` flag makes the agent rec
 
 > *"buatkan fitur login"* → agent works → memory updates itself → next session it remembers everything.
 
-If you ever want to poke at it manually: `aegisxmemory dashboard` opens a web view of what it remembers. **Everything below this line is optional reading** — how it works, what got installed, and reference material.
+**What you now have — and how to check each part.** Nothing else needs starting:
+
+| Piece | What it is | How to check it |
+|---|---|---|
+| **MCP server (stdio)** | the five memory tools your agent calls. **The agent spawns it — you never run it,** and "activating" it just means restarting the agent | `aegisxmemory doctor` → says whether the registration is in place; [§5.4](#54-verify-the-registration) probes the server itself |
+| **Auto-memory rules** | the standing order to recall at session start and save at the end (installed by `--rules`) | the marker block in `~/.hermes/SOUL.md` (or your agent's rules file) — [§6](#6-making-memory-automatic) |
+| **Web dashboard** | a browser view of what it remembers, plus one guarded write (delete a knowledge entry) | `aegisxmemory dashboard` → open the printed `http://127.0.0.1:3360` |
+| **HTTP MCP server** | *only* for agents that cannot spawn a subprocess (some IDE extensions, containers, remote machines) — **not needed** for Hermes/Claude/Cursor | `aegisxmemory serve` → [§5.5](#55-http-transport-remote--ide-agents) |
+
+**Everything below this line is optional reading** — how it works, what got installed, and reference material.
 
 ---
 
@@ -236,19 +245,45 @@ printf '%s\n' \
 
 ### 5.5 HTTP transport (remote / IDE agents)
 
-For agents that cannot spawn stdio subprocesses (IDE extensions, containers, remote machines):
+**Most people can skip this.** Hermes, Claude and Cursor all spawn the stdio server themselves (§5.1), so there is nothing to start. Use HTTP only when the agent *cannot* spawn a subprocess — an IDE extension, a container, or an agent on another machine:
 
 ```bash
 aegisxmemory serve --token my-secret     # http://127.0.0.1:3359/mcp
 ```
 
-Same five tools over StreamableHTTP. Hardened by default:
+The same five tools over StreamableHTTP, `aegisxmemory_graph` included.
+
+> ### `/mcp` is an MCP endpoint, not a web page
+>
+> Open `http://127.0.0.1:3359/mcp` in a browser and you get a plain-language page explaining what this address is, why nothing is broken, and where the dashboard lives. The status is still `406` and the body is still only a description — an agent cannot be fooled by it.
+>
+> Every other client is untouched. `curl` (which sends `Accept: */*`) still answers the raw JSON-RPC refusal:
+>
+> ```json
+> {"jsonrpc":"2.0","error":{"code":-32000,"message":"Not Acceptable: Client must accept text/event-stream"},"id":null}
+> ```
+>
+> **That is the server working correctly, not a failure.** Per the Streamable HTTP spec a `GET` to an MCP endpoint asks for a server→client *event stream*, so a client that cannot accept one is refused with `406` — precisely so a stray browser tab is not silently treated as an agent. A JSON-RPC `POST` that declares the right `Accept` gets a normal `200`. The friendly page keys off an explicit `Accept: text/html`, which no MCP client sends.
+>
+> If you want something to *look at* in a browser, that is the dashboard: `aegisxmemory dashboard`.
+
+Verify the HTTP transport end to end — this prints the five tool names:
+
+```bash
+curl -s http://127.0.0.1:3359/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq -r '.result.tools[].name'
+```
+
+Hardened by default:
 
 - binds `127.0.0.1` only; non-localhost binds are refused unless a token is set,
 - bearer tokens compared in constant time (SHA-256 + `timingSafeEqual` — no timing side channel),
 - empty `--token` / `AEGISX_TOKEN` is treated as "no token" and can never bypass the bind guard,
 - DNS-rebinding Host guard,
 - request bodies capped at 1 MB (declared or chunked) and rejected with `413` before reaching the transport,
+- one MCP server per request, so a long-lived event stream can never block the next client (the SDK allows a single transport per server, and closing one never frees the slot),
 - handler errors can never crash the server process.
 
 ## 6. Making memory automatic
@@ -322,6 +357,8 @@ aegisxmemory forget project.myapp.old-thing    # delete a fact
 | Learned something stable | `aegisxmemory remember project.<name>.<key> <value>` |
 | End of session | `aegisxmemory save --json -` / *"save the session handoff"* |
 | Wondering what a fact used to say | `aegisxmemory history <key>` |
+| Wondering what the agent learned | `aegisxmemory knowledge` |
+| Backing up / moving machines | `aegisxmemory export > memory.md` |
 | Want it hands-off | `aegisxmemory watch .` in a side terminal |
 | Something feels off | `aegisxmemory doctor` |
 | Curious about usage | `aegisxmemory stats` or `aegisxmemory dashboard` |
@@ -334,15 +371,18 @@ aegisxmemory dashboard --no-open  # just print the URL (run it in a tmux pane, s
 aegisxmemory dashboard --port 4021
 ```
 
-A read-only view of everything the engine remembers — refreshed every 10 s, rendered locally:
+A live view of everything the engine remembers — refreshed every 10 s, rendered locally. Two views: **Overview** is the shape of memory, **Memory** is its text. Its only write is deleting a single knowledge entry; everything else stays read-only.
 
+- **Memory browser** — the view that answers "where do I actually *read* this?". Pick a repository and every decision, gotcha, convention and lesson it has recorded is listed with its **full body**, its kind, its `#id` (the handle `aegisxmemory knowledge --forget <id>` takes) and its date, each with a copy button. A kind filter and a search box (title, body or id) narrow the list, and the line above it **says what it is not showing** — `showing the newest 200 of 1,204 entries stored for this repo` — because the endpoint caps its rows while reporting the repository's true totals. The same page carries that repo's pinned facts and its handoffs **with every list intact** (facts, decisions, gotchas, conventions, next steps), so a handoff can be re-read instead of re-derived. Nothing here is the graph: there is no graph in this view at all, and each repo's page is fetched on demand (`/api/memory?repo=…`) rather than polled, so knowledge bodies never ride in the 10-second payload. The view you were last on is remembered, and `#memory` is a working deep link. Each entry also carries a **delete** button that **asks first** (one click opens `Delete #12?` with `confirm delete` / `cancel`, and nothing is sent until you confirm), then removes the row and re-reads the repository's totals from the server, so the page never reports a number it guessed
 - **Bento totals** — estimated tokens saved (with a sparkline), repos, facts (including how many changed since they were first pinned), knowledge entries, handoffs, and a recall hit-rate ring; numbers ease to their new reading on change, and reduced motion renders the final value straight away
 - **Knowledge graph** — a **deterministic clustered layout** (repos spaced on a ring, each hub's facts, decisions/gotchas/conventions and handoffs fanned out around it) that **never reshuffles**: an identical poll leaves every node exactly where you dragged it. Drag to untangle, pan and zoom (buttons, wheel, `+`/`-`, `0` to fit), hover or select a node to dim everything that is not a neighbour, filter by kind (repos / facts / knowledge / handoffs) with a live `N filtered out` count, and open a selected node's detail panel, which names its **kind** and **repo** and shows its **full stored text** (fact key and value, knowledge title and body, a path, a handoff's goal) next to a one-click copy button, above its links. Tab into the graph and the arrow keys walk the nodes with a roving tab stop
 - **Recall history chart** — the most recent recalls as bars on a grid, with a **Show** picker (10 / 30 / 50 / All) choosing how many are drawn — older ones are left out, and the axis says `showing the last 10 of 143` so the window is never silently narrowed — **each bar labelled with its token count** and described by a tooltip. A **legend** spells out the encoding — teal = warm hit, amber = cold miss, height ≈ tokens returned, peak — and names the keyboard gesture. A **Zoom** toggle swaps the fit-to-width view for a wider, horizontally scrollable one with more room per bar and larger labels. The chart is a single Tab stop: `←`/`→` (or `↑`/`↓`, plus `Home`/`End`) move a roving tab stop from bar to bar. The bar you focus is kept **wholly on screen**: the panel scrolls sideways in zoom mode, and the page scrolls vertically when the viewport is short. Its **full detail line is mirrored under the chart** — with a **copy button** that hands the current bar's text to the clipboard — and it follows **hover as well as focus**, debounced so sweeping the pointer across bars cannot strobe the line. Both the window size and the zoom choice are **remembered across reloads** (`localStorage`, exactly like the theme), so the view you set is the view you get back
 - **List view** — the same graph as a plain table (node, kind, repository, links) for keyboard and screen-reader users
-- **Per-repo table** — files/symbols indexed, scans, recalls, hit rate; select a repository to see its facts and handoffs
+- **Per-repo table** — files/symbols indexed, scans, recalls, hit rate; select a repository for its facts and handoffs, or open the **Memory** view to read its knowledge in full
 - **Pinned facts** — filterable, a copy button per fact, and a **changed** badge plus the value it replaced (`was: 3000 (changed 2026-09-12)`) — the same signal recall gives the agent
 - **Light / dark / auto** — one token layer of 80+ semantic variables (colour, space, radius, shadow, easing) drives every part, light and dark alike, and **no component hard-codes a colour**; the theme is resolved before first paint from your OS preference, and the topbar button cycles Auto → Light → Dark
+
+That one write is `POST /api/knowledge/delete` and it is guarded rather than authenticated: a JSON request body (an HTML form can only send urlencoded/text, and a cross-origin `fetch` with a JSON body needs a CORS preflight this server never grants), an `Origin` that must match this exact host and port, `Sec-Fetch-Site: same-origin` whenever the browser sends it, a `Host` header that must name this machine (the same DNS-rebinding guard the MCP HTTP server uses), and a body capped at 4 KB that must name one positive integer id. Anything else is refused with 405 / 415 / 403 / 413 / 400, and the refusal never touches a row.
 
 The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose it), serves its stylesheet and script from its own origin (`/app.css`, `/app.js`) with **no CDN and no external requests** (works fully offline), and renders all stored data via `textContent`, so a malicious fact value can never inject markup into the page. Every response also carries a strict `Content-Security-Policy` with a **fresh nonce per response** (`default-src 'none'`, same-origin assets only, plus that one nonce for the pre-paint theme bootstrap) together with `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` — so the guarantee that a stored fact value cannot execute is structural, not just a habit of the renderer. It also honours `prefers-reduced-motion`, exposes a live connection status (`aria-live`, and an explicit offline state when the server goes away), and marks every section as a labelled `header`/`main` landmark with a skip link and a visible focus ring. The graph keeps **one** animation loop, which stops as soon as the layout settles and while the tab is hidden.
 
@@ -356,12 +396,14 @@ The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose i
 | `aegisxmemory remember <key> <value>` | pin a stable fact |
 | `aegisxmemory forget <key>` | delete a fact (and its superseded values) |
 | `aegisxmemory history [key]` | what a pinned fact used to be (timeline of superseded values) |
+| `aegisxmemory knowledge [query] [--kind k] [--repo p] [--limit n] [--repos] [--forget id]` | browse / search the knowledge store; `--repos` prints per-repo totals, `--forget` deletes one entry by id |
 | `aegisxmemory save --json <file\|->` | persist a session handoff (JSON file or stdin); each decision, gotcha and convention is also stored as searchable knowledge |
 | `aegisxmemory resume` | print last handoff + memory for this repo |
 | `aegisxmemory stats [path] [--json]` | observability: files/symbols, scans, recalls, hit rate, tokens saved |
+| `aegisxmemory export [--format md\|json] [--repo p]` | dump facts, knowledge and handoffs (markdown, or JSON) |
 | `aegisxmemory watch [path] [--poll] [--debounce n]` | event-driven auto-index (chokidar, polling fallback) |
 | `aegisxmemory doctor [path] [--fix] [--json]` | health check: DB, schema, index drift, MCP registrations |
-| `aegisxmemory dashboard [--port n] [--no-open]` | local web dashboard (read-only, charts, 127.0.0.1 only) |
+| `aegisxmemory dashboard [--port n] [--no-open]` | local web dashboard (charts, per-repo memory browser, 127.0.0.1 only) |
 | `aegisxmemory mcp` | run the MCP stdio server |
 | `aegisxmemory serve [--port n] [--host h] [--token t]` | MCP over HTTP (localhost-only, bearer auth) |
 | `aegisxmemory mcp-config [--agent n] [--bin] [--install] [--rules]` | print / install MCP registration blocks; `--rules` adds auto-memory behavior |
@@ -414,6 +456,65 @@ aegisxmemory forget project.myapp.dev-port            # removes the history too
 ```
 
 Keys: lowercase letters, digits, dot, underscore, hyphen (max 128 chars). Values: over 2,000 chars are truncated (never rejected); secret-shaped values are refused. See [§10](#10-facts-naming-limits-examples).
+</details>
+
+<details>
+<summary><code>knowledge</code> — read, search and prune what the agent learned</summary>
+
+Every decision, gotcha and convention a handoff records is also stored as searchable knowledge, so it stays findable in later sessions. This is the owner's view of that store: not the ranked, budgeted window `recall` composes, but everything, filterable.
+
+```bash
+aegisxmemory knowledge                       # newest first, every repo
+aegisxmemory knowledge sqlite                # full-text search over title + body
+aegisxmemory knowledge --kind gotcha         # decision | gotcha | convention | lesson
+aegisxmemory knowledge --repo .              # one repository only
+aegisxmemory knowledge --limit 200           # more than the default 50
+aegisxmemory knowledge --json | jq .         # machine mode (ids included)
+
+aegisxmemory knowledge --repos               # per-repo totals (what the dashboard's picker shows)
+aegisxmemory knowledge --forget 12           # delete entry #12 (the # in the listing)
+```
+
+```
+knowledge (4):
+  #4  [decision] pick vite over webpack
+       ~/site · 2026-09-12
+  #3  [convention] two-space indent
+       ~/demo · 2026-09-12
+```
+
+A listing that hits its cap says so instead of ending silently — `(showing the newest 50 of 213 — raise --limit or narrow the filters)` — exactly like the dashboard's memory browser, and the two read the same totals from the same helper, so the CLI and the page can never disagree about how much is stored.
+
+`--repos` answers the other question: how much is in each repository, without printing a single body.
+
+```
+aegisxmemory knowledge --repos
+```
+
+```
+repos with memory (2):
+  ~/site  4 knowledge entries · 3 facts · 2 handoffs
+  ~/demo  1 knowledge entry · 0 facts · 1 handoff
+
+2 repos · 5 knowledge entries · 3 facts · 3 handoffs
+```
+
+Those are the numbers the dashboard's Overview table shows — the same three counters, from the same `countForRepo`, not recomputed — and allowlist-gated the same way, so a hidden repo appears in neither surface. `--repos` summarises repositories, so it refuses a query or `--kind` (exit 1) rather than silently ignoring the filter.
+
+An entry is identified by `(repo, kind, title)` — so re-recording a decision overwrites it in place — and carries a numeric `id`, which is what `--forget` deletes by. Deletion is repo-gated like every other operation: an allowlist that hides a repo refuses to delete from it too. A query that matches nothing says so; `--kind` outside the four kinds is a user error (exit 1), not a silently unfiltered listing.
+</details>
+
+<details>
+<summary><code>export</code> — take the whole memory with you</summary>
+
+```bash
+aegisxmemory export                    # markdown to stdout
+aegisxmemory export > memory.md        # …redirect it to a file
+aegisxmemory export --format json      # the same dump as strict JSON
+aegisxmemory export --repo .           # one repository only
+```
+
+Every fact (with the value it replaced), every knowledge entry, every handoff with its note lists, and the per-repo telemetry rollup — the backup and machine-migration path for a store that otherwise lives only in `~/.aegisx/memory.sqlite`, and a readable artifact to attach to a review. Each section states how many rows it holds, and a section that reaches the 5,000-row cap says so rather than ending silently. `--repo` leaves global facts (those with no repository) out, since they belong to no repo. Allowlist-gated: a hidden repo contributes neither rows nor counts.
 </details>
 
 <details>

@@ -32,6 +32,8 @@ beforeEach(() => {
 
 afterEach(() => {
   store.close();
+  // A test that sets the allowlist must not leak it into the next one.
+  delete process.env['AEGISX_ALLOWED_REPOS'];
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
@@ -687,6 +689,316 @@ describe('knowledge — upsert edge cases', () => {
       expect(migrated.knowledgeForRepo(repo).find((k) => k.kind === 'decision')?.body).toBe('newest of all');
     } finally {
       migrated.close();
+    }
+  });
+});
+
+describe('knowledge — browsing, filtering and deletion', () => {
+  const repoNorm = (): string => normalizeRepoPath(repo);
+
+  const otherRepo = (): string => {
+    const dir = path.join(workspace, 'other');
+    fs.mkdirSync(dir, { recursive: true });
+    return normalizeRepoPath(dir);
+  };
+
+  it('lists across repos newest-first and carries the id the CLI deletes by', () => {
+    const other = otherRepo();
+    store.saveKnowledge(repoNorm(), 'decision', 'pick sqlite', 'first body', []);
+    store.saveKnowledge(other, 'gotcha', 'port clash', 'second body', []);
+
+    const rows = store.knowledgeList({});
+    expect(rows.map((r) => r.title)).toEqual(['port clash', 'pick sqlite']);
+    expect(rows.every((r) => typeof r.id === 'number')).toBe(true);
+
+    // the id travels on every read path, which is what --forget keys on
+    expect(store.knowledgeForRepo(repoNorm()).every((r) => typeof r.id === 'number')).toBe(true);
+    expect(store.searchKnowledge('first body', null).every((r) => typeof r.id === 'number')).toBe(true);
+    expect(store.listKnowledge().every((r) => typeof r.id === 'number')).toBe(true);
+  });
+
+  it('filters by kind and by repo, and combines the two', () => {
+    const other = otherRepo();
+    store.saveKnowledge(repoNorm(), 'decision', 'pick sqlite', 'a', []);
+    store.saveKnowledge(repoNorm(), 'gotcha', 'port clash', 'b', []);
+    store.saveKnowledge(other, 'decision', 'pick postgres', 'c', []);
+
+    expect(store.knowledgeList({ kind: 'decision' }).map((r) => r.title).sort()).toEqual(['pick postgres', 'pick sqlite']);
+    expect(store.knowledgeList({ repo: repoNorm() }).map((r) => r.title).sort()).toEqual(['pick sqlite', 'port clash']);
+    expect(store.knowledgeList({ repo: repoNorm(), kind: 'gotcha' }).map((r) => r.title)).toEqual(['port clash']);
+    expect(store.knowledgeList({ limit: 1 })).toHaveLength(1);
+  });
+
+  it('matches a query in the title or the body, and answers nothing for unsearchable input', () => {
+    store.saveKnowledge(repoNorm(), 'decision', 'pick sqlite', 'zero-config local storage', []);
+    store.saveKnowledge(repoNorm(), 'convention', 'two-space indent', 'sqlite has nothing to do with it', []);
+
+    expect(store.knowledgeList({ query: 'sqlite' })).toHaveLength(2);
+    expect(store.knowledgeList({ query: 'zero-config' }).map((r) => r.title)).toEqual(['pick sqlite']);
+    // punctuation-only input must not degrade into "list everything"
+    expect(store.knowledgeList({ query: '!!!' })).toEqual([]);
+  });
+
+  it('deletes one entry by id, and the FTS index stops matching it at once', () => {
+    store.saveKnowledge(repoNorm(), 'decision', 'pick sqlite', 'zero-config', []);
+    store.saveKnowledge(repoNorm(), 'gotcha', 'port clash', 'dev server on 5000', []);
+    const target = store.knowledgeList({ query: 'sqlite' })[0];
+    expect(target?.id).toBeDefined();
+
+    expect(store.forgetKnowledge(target!.id!)).toBe(true);
+    expect(store.countKnowledge()).toBe(1);
+    expect(store.searchKnowledge('sqlite', null)).toEqual([]);
+    expect(store.knowledgeList({}).map((r) => r.title)).toEqual(['port clash']);
+    // deleting the same id twice is a no-op, not an error
+    expect(store.forgetKnowledge(target!.id!)).toBe(false);
+  });
+
+  it('reports the owning repo of an id, and nothing for an unknown one', () => {
+    const saved = store.saveKnowledge(repoNorm(), 'decision', 'pick sqlite', 'a', []);
+    expect(saved.id).toBeTypeOf('number');
+    expect(store.knowledgeRepoOf(saved.id!)).toBe(repoNorm());
+    expect(store.knowledgeRepoOf(999_999)).toBeUndefined();
+  });
+});
+
+describe('knowledge — the engine browse surface', () => {
+  const note = (goal: string, decisions: string[], gotchas: string[] = [], conventions: string[] = []) =>
+    ({ goal, facts: [], decisions, gotchas, conventions, nextSteps: [] });
+
+  it('lists every repo, then one repo, then one kind', () => {
+    const other = path.join(workspace, 'other');
+    fs.mkdirSync(other, { recursive: true });
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, note('a', ['pick sqlite']));
+      engine.saveSession(other, note('b', ['pick postgres'], ['port clash']));
+
+      expect(engine.listKnowledge().map((k) => k.title).sort()).toEqual(['pick postgres', 'pick sqlite', 'port clash']);
+      expect(engine.listKnowledge({ repoAbsPath: repo }).map((k) => k.title)).toEqual(['pick sqlite']);
+      expect(engine.listKnowledge({ kind: 'gotcha' }).map((k) => k.title)).toEqual(['port clash']);
+      expect(engine.listKnowledge({ repoAbsPath: repo, kind: 'gotcha' })).toEqual([]);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('rejects an empty query, and answers nothing for one that cannot match', () => {
+    const engine = new Engine(dbFile);
+    try {
+      // whitespace yields no FTS clause at all — a user error, like recall
+      expect(() => engine.listKnowledge({ query: '   ' })).toThrow(AegisxError);
+      // punctuation builds a clause that matches nothing: empty, not an error
+      expect(engine.listKnowledge({ query: '!!!' })).toEqual([]);
+      expect(engine.listKnowledge({ query: 'sqlite' })).toEqual([]);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('keeps the allowlist door shut for reading and for deleting', () => {
+    const hidden = path.join(workspace, 'hidden');
+    fs.mkdirSync(hidden, { recursive: true });
+    const hiddenEntry = store.saveKnowledge(normalizeRepoPath(hidden), 'decision', 'hidden note', 'body', []);
+    const visibleEntry = store.saveKnowledge(normalizeRepoPath(repo), 'decision', 'visible note', 'body', []);
+
+    process.env['AEGISX_ALLOWED_REPOS'] = normalizeRepoPath(repo);
+    const engine = new Engine(dbFile);
+    try {
+      expect(engine.listKnowledge().map((k) => k.title)).toEqual(['visible note']);
+      expect(() => engine.forgetKnowledge(hiddenEntry.id!)).toThrow(AegisxError);
+      expect(store.countKnowledge()).toBe(2); // the hidden row survived the refusal
+      expect(engine.forgetKnowledge(visibleEntry.id!)).toBe(true);
+      expect(engine.forgetKnowledge(999_999)).toBe(false);
+    } finally {
+      engine.close();
+    }
+  });
+});
+
+describe('export — whole-memory dump', () => {
+  const handoff = (goal: string, facts: string[], decisions: string[], gotchas: string[], conventions: string[], nextSteps: string[]) =>
+    ({ goal, facts, decisions, gotchas, conventions, nextSteps });
+
+  it('includes repos, facts, knowledge and full handoffs, with counts that match the lists', () => {
+    const engine = new Engine(dbFile);
+    try {
+      engine.remember('project.demo.stack', 'flask', repo);
+      engine.saveSession(repo, handoff(
+        'ship the demo', ['one fact'], ['pick sqlite'], ['port clash'], ['two-space indent'], ['write tests'],
+      ));
+
+      const dump = engine.exportMemory();
+      expect(dump.totals).toEqual({ repos: 1, facts: 1, knowledge: 3, sessions: 1 });
+      expect(dump.facts.map((f) => f.key)).toEqual(['project.demo.stack']);
+      expect(dump.knowledge.map((k) => k.title).sort()).toEqual(['pick sqlite', 'port clash', 'two-space indent']);
+      expect(dump.repos[0]?.repo).toBe(normalizeRepoPath(repo));
+      // the handoff travels with its lists, not just its counts
+      expect(dump.sessions[0]?.goal).toBe('ship the demo');
+      expect(dump.sessions[0]?.decisions).toEqual(['pick sqlite']);
+      expect(dump.sessions[0]?.nextSteps).toEqual(['write tests']);
+      expect(dump.rowLimit).toBeGreaterThan(0);
+      expect(Date.parse(dump.generatedAt)).not.toBeNaN();
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('never exports a repo the allowlist hides', () => {
+    const hidden = path.join(workspace, 'hidden');
+    fs.mkdirSync(hidden, { recursive: true });
+    store.saveKnowledge(normalizeRepoPath(hidden), 'decision', 'hidden note', 'body', []);
+    store.saveSession(normalizeRepoPath(repo), handoff('visible work', [], [], [], [], []));
+
+    process.env['AEGISX_ALLOWED_REPOS'] = normalizeRepoPath(repo);
+    const engine = new Engine(dbFile);
+    try {
+      const dump = engine.exportMemory();
+      expect(dump.repos.map((r) => r.repo)).toEqual([normalizeRepoPath(repo)]);
+      expect(dump.knowledge).toEqual([]);
+      expect(dump.sessions.map((s) => s.goal)).toEqual(['visible work']);
+      expect(dump.totals).toEqual({ repos: 1, facts: 0, knowledge: 0, sessions: 1 });
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('scopes to one repo on request, leaving global facts out of a scoped dump', () => {
+    const other = path.join(workspace, 'other');
+    fs.mkdirSync(other, { recursive: true });
+    const engine = new Engine(dbFile);
+    try {
+      engine.remember('project.global.up', 'x', null); // no repo hint: belongs to no repo
+      engine.remember('project.here.stack', 'flask', repo);
+      engine.remember('project.there.stack', 'django', other);
+
+      const scoped = engine.exportMemory(repo);
+      expect(scoped.facts.map((f) => f.key)).toEqual(['project.here.stack']);
+      expect(scoped.repos.map((r) => r.repo)).toEqual([normalizeRepoPath(repo)]);
+
+      const full = engine.exportMemory();
+      expect(full.facts.map((f) => f.key).sort()).toEqual([
+        'project.global.up',
+        'project.here.stack',
+        'project.there.stack',
+      ]);
+    } finally {
+      engine.close();
+    }
+  });
+});
+
+describe('knowledge — one repo’s whole page (the dashboard memory browser)', () => {
+  it('returns that repo’s knowledge, facts and handoffs, with true totals beside capped lists', () => {
+    const other = path.join(workspace, 'other');
+    fs.mkdirSync(other);
+    const engine = new Engine(dbFile);
+    try {
+      engine.remember('project.here.stack', 'node', repo);
+      engine.remember('project.there.stack', 'go', other);
+      engine.remember('project.global.up', 'no repo hint', null);
+      for (let i = 0; i < 5; i++) { store.saveKnowledge(repo, 'gotcha', `trap ${String(i)}`, `body ${String(i)}`, []); }
+      store.saveKnowledge(other, 'gotcha', 'other trap', 'other body', []);
+      engine.saveSession(repo, { goal: 'here', facts: [], decisions: [], nextSteps: [] });
+      engine.saveSession(other, { goal: 'there', facts: [], decisions: [], nextSteps: [] });
+
+      const page = engine.repoMemory(repo);
+      expect(page.repo).toBe(normalizeRepoPath(repo));
+      expect(page.counts).toEqual({ facts: 1, knowledge: 5, sessions: 1 });
+      expect(page.knowledge).toHaveLength(5);
+      expect(page.knowledge.every((k) => typeof k.id === 'number' && k.repo === normalizeRepoPath(repo))).toBe(true);
+      // repo-scoped: another repo's rows, and the repo-less global fact, stay out
+      expect(page.facts.map((f) => f.key)).toEqual(['project.here.stack']);
+      expect(page.sessions.map((s) => s.goal)).toEqual(['here']);
+
+      // A cap cuts the rows, never the totals — the page must be able to say so.
+      const capped = engine.repoMemory(repo, 2);
+      expect(capped.knowledge).toHaveLength(2);
+      expect(capped.counts.knowledge).toBe(5);
+      // newest first, so the cap keeps the most recent entries
+      expect(capped.knowledge.map((k) => k.id)).toEqual(page.knowledge.slice(0, 2).map((k) => k.id));
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('countKnowledge follows exactly the filters of the listing it caps', () => {
+    const other = path.join(workspace, 'other-counts');
+    fs.mkdirSync(other);
+    const engine = new Engine(dbFile);
+    try {
+      store.saveKnowledge(repo, 'decision', 'd1', 'body', []);
+      store.saveKnowledge(repo, 'decision', 'd2', 'body', []);
+      store.saveKnowledge(repo, 'gotcha', 'g1', 'body', []);
+      store.saveKnowledge(other, 'gotcha', 'g2', 'body', []);
+
+      expect(engine.countKnowledge()).toBe(4);
+      expect(engine.countKnowledge({ kind: 'decision' })).toBe(2);
+      expect(engine.countKnowledge({ repoAbsPath: repo })).toBe(3);
+      expect(engine.countKnowledge({ repoAbsPath: repo, kind: 'gotcha' })).toBe(1);
+      expect(engine.countKnowledge({ query: 'g1' })).toBe(1);
+
+      // The total is the listing's size, not the table's: that is the whole
+      // point of showing it beside a capped list.
+      for (const filters of [{}, { repoAbsPath: repo }, { kind: 'decision' as const }]) {
+        const listed = engine.listKnowledge({ ...filters, limit: 1_000 });
+        expect(engine.countKnowledge(filters)).toBe(listed.length);
+      }
+      const capped = engine.listKnowledge({ repoAbsPath: repo, limit: 2 });
+      expect(capped).toHaveLength(2);
+      expect(engine.countKnowledge({ repoAbsPath: repo })).toBe(3);
+
+      // An empty query stays a user error, the same contract as the listing.
+      expect(() => engine.countKnowledge({ query: '   ' })).toThrow(/no searchable terms/);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('repoMemorySummaries reports repoMemory’s numbers, and hides what the policy hides', () => {
+    const other = path.join(workspace, 'other-summary');
+    fs.mkdirSync(other);
+    const engine = new Engine(dbFile);
+    try {
+      store.saveKnowledge(repo, 'decision', 'here one', 'body', []);
+      store.saveKnowledge(repo, 'decision', 'here two', 'body', []);
+      store.saveKnowledge(other, 'decision', 'there', 'body', []);
+
+      const summaries = engine.repoMemorySummaries();
+      // largest first
+      expect(summaries.map((entry) => entry.repo)).toEqual([normalizeRepoPath(repo), normalizeRepoPath(other)]);
+      // one source of truth: the summary cannot drift from the page's numbers
+      for (const entry of summaries) {
+        expect(entry.counts).toEqual(engine.repoMemory(entry.repo).counts);
+      }
+      expect(summaries[0]!.counts.knowledge).toBe(2);
+    } finally {
+      engine.close();
+    }
+
+    process.env['AEGISX_ALLOWED_REPOS'] = repo;
+    const gated = new Engine(dbFile);
+    try {
+      const visible = gated.repoMemorySummaries();
+      expect(visible.map((entry) => entry.repo)).toEqual([normalizeRepoPath(repo)]);
+      expect(visible[0]!.counts.knowledge).toBe(2);
+    } finally {
+      gated.close();
+    }
+  });
+
+  it('refuses a repo the allowlist hides instead of answering with an empty page', () => {
+    store.saveKnowledge(repo, 'decision', 'visible decision', 'visible body', []);
+    const hidden = path.join(workspace, 'hidden');
+    fs.mkdirSync(hidden);
+    store.saveKnowledge(hidden, 'decision', 'hidden decision', 'hidden body', []);
+
+    process.env['AEGISX_ALLOWED_REPOS'] = repo;
+    const engine = new Engine(dbFile);
+    try {
+      expect(engine.repoMemory(repo).counts.knowledge).toBe(1);
+      expect(() => engine.repoMemory(hidden)).toThrow(/not in AEGISX_ALLOWED_REPOS/);
+    } finally {
+      engine.close();
     }
   });
 });

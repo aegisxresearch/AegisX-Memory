@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Engine, DEFAULT_TOKEN_BUDGET, describeSessionSave } from '../core/engine.js';
 import { aegisxHome, dbPath, normalizeRepoPath } from '../core/paths.js';
-import { AegisxError, type SessionHandoffInput, type SessionSaveSummary } from '../core/types.js';
+import { AegisxError, type KnowledgeKind, type SessionHandoffInput, type SessionSaveSummary } from '../core/types.js';
+import { renderExportMarkdown, renderKnowledgeList, renderRepoSummaries } from './render.js';
 import { binServerConfig, defaultServerConfig, parseAgentArg, renderConfig } from './mcp-config.js';
 import { SETUP_AGENTS, describeResult, describeRulesResult, installForAgent, installRulesForAgent, type SetupAgent } from './auto-setup.js';
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
@@ -66,12 +67,38 @@ function preview(text: string, max = 60): string {
 /** Commander's own arg-parse errors map to user errors (exit 1). */
 class CommanderUserError extends Error {}
 
+function positiveInt(flag: string): (value: string) => number {
+  return (value: string): number => {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isNaN(parsed) || parsed <= 0) {
+      throw new CommanderUserError(`${flag} must be a positive integer`);
+    }
+    return parsed;
+  };
+}
+
 function intArg(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    throw new CommanderUserError('--budget must be a positive integer');
+  return positiveInt('--budget')(value);
+}
+
+/** The kinds the store accepts — kept beside the CLI so `--kind` fails loudly on
+ *  a typo instead of silently listing everything. */
+const KNOWLEDGE_KINDS = ['decision', 'gotcha', 'convention', 'lesson'] as const;
+
+function knowledgeKindArg(value: string): KnowledgeKind {
+  if (!(KNOWLEDGE_KINDS as readonly string[]).includes(value)) {
+    throw new CommanderUserError(`--kind must be one of: ${KNOWLEDGE_KINDS.join(' | ')}`);
   }
-  return parsed;
+  return value as KnowledgeKind;
+}
+
+type ExportFormat = 'md' | 'json';
+
+function exportFormatArg(value: string): ExportFormat {
+  if (value !== 'md' && value !== 'json') {
+    throw new CommanderUserError('--format must be md or json');
+  }
+  return value;
 }
 
 // Kept as an alias so the CLI's JSON contract stays readable at the call site;
@@ -292,6 +319,92 @@ program
   });
 
 program
+  .command('knowledge')
+  .description('list, search and filter the knowledge store (decisions, gotchas, conventions, lessons)')
+  .argument('[query]', 'full-text search over entry titles and bodies')
+  .option('--kind <kind>', 'only one kind: decision | gotcha | convention | lesson', knowledgeKindArg)
+  .option('--repo <path>', 'only one repository (default: every repo)')
+  .option('--limit <n>', 'max entries to print', positiveInt('--limit'), 50)
+  .option('--repos', 'summarise every repository (knowledge / facts / handoffs) instead of listing entries', false)
+  .option('--forget <id>', 'delete the entry with this id (the # shown in the listing)', positiveInt('--forget'))
+  .option('--json', 'machine-readable output', false)
+  .action((query: string | undefined, opts: { kind?: KnowledgeKind; repo?: string; limit: number; repos: boolean; forget?: number; json: boolean }) => {
+    run(() => {
+      const engine = openEngine();
+      try {
+        if (opts.forget !== undefined) {
+          if (opts.repos) {
+            throw new AegisxError('user', '--repos and --forget cannot be combined');
+          }
+          if (!engine.forgetKnowledge(opts.forget)) {
+            throw new AegisxError('user', `no knowledge entry with id ${opts.forget}`);
+          }
+          writeJson({ ok: true, id: opts.forget, deleted: true }, opts.json, () =>
+            process.stdout.write(`deleted knowledge #${opts.forget}\n`),
+          );
+          return;
+        }
+        if (opts.repos) {
+          // A summary describes whole repositories, so entry filters would be
+          // silently ignored — say so rather than accepting them and dropping them.
+          if (query !== undefined || opts.kind !== undefined) {
+            throw new AegisxError('user', '--repos summarises repositories; drop the query and --kind');
+          }
+          const scope = opts.repo === undefined ? undefined : normalizeRepoPath(opts.repo);
+          // A guarded read first: a repo the policy hides must be refused outright,
+          // not silently rendered as "no memory stored for …".
+          if (scope !== undefined) {
+            engine.countKnowledge({ repoAbsPath: scope });
+          }
+          const all = engine.repoMemorySummaries();
+          const summaries = scope === undefined ? all : all.filter((entry) => entry.repo === scope);
+          const totals = summaries.reduce(
+            (sum, entry) => ({
+              facts: sum.facts + entry.counts.facts,
+              knowledge: sum.knowledge + entry.counts.knowledge,
+              sessions: sum.sessions + entry.counts.sessions,
+            }),
+            { facts: 0, knowledge: 0, sessions: 0 },
+          );
+          writeJson({ ok: true, repos: summaries, totals }, opts.json, () =>
+            process.stdout.write(renderRepoSummaries(summaries, scope)),
+          );
+          return;
+        }
+        const entries = engine.listKnowledge({
+          ...(query === undefined ? {} : { query }),
+          ...(opts.kind === undefined ? {} : { kind: opts.kind }),
+          ...(opts.repo === undefined ? {} : { repoAbsPath: opts.repo }),
+          limit: opts.limit,
+        });
+        // The true size of what was just filtered — the same number the memory
+        // page prints, so neither surface can imply the store is smaller than it is.
+        const total = engine.countKnowledge({
+          ...(query === undefined ? {} : { query }),
+          ...(opts.kind === undefined ? {} : { kind: opts.kind }),
+          ...(opts.repo === undefined ? {} : { repoAbsPath: opts.repo }),
+        });
+        writeJson({ ok: true, knowledge: entries, shown: entries.length, total }, opts.json, () => {
+          if (entries.length === 0) {
+            const filtered = query !== undefined || opts.kind !== undefined || opts.repo !== undefined;
+            process.stdout.write(filtered ? 'no knowledge entries match\n' : 'no knowledge entries stored yet\n');
+            return;
+          }
+          process.stdout.write(renderKnowledgeList(entries));
+          if (entries.length < total) {
+            const order = query === undefined ? 'the newest' : 'the top';
+            process.stdout.write(
+              `(showing ${order} ${entries.length} of ${total} — raise --limit or narrow the filters)\n`,
+            );
+          }
+        });
+      } finally {
+        engine.close();
+      }
+    });
+  });
+
+program
   .command('save')
   .description('write a session handoff from JSON (--json <file>, or pipe: aegisxmemory save --json -)')
   .option('--json [file]', 'JSON file, or - for stdin; with no value: use input mode AND JSON output')
@@ -395,6 +508,27 @@ program
           lines.push(`tokens saved (est.): ${stats.tokensSavedEstimate ?? '—'}  ·  hit rate: ${stats.hitRate !== null ? `${stats.hitRate}%` : '—'}`);
           process.stdout.write(lines.join('\n') + '\n');
         });
+      } finally {
+        engine.close();
+      }
+    });
+  });
+
+program
+  .command('export')
+  .description('dump facts, knowledge and handoffs as markdown (default) or JSON — backup, portability, review')
+  .option('--format <fmt>', 'md | json', exportFormatArg, 'md')
+  .option('--repo <path>', 'limit the dump to one repository (default: everything)')
+  .option('--json', 'shorthand for --format json', false)
+  .action((opts: { format: ExportFormat; repo?: string; json: boolean }) => {
+    run(() => {
+      const engine = openEngine();
+      try {
+        const data = engine.exportMemory(opts.repo);
+        const home = aegisxHome();
+        writeJson({ ok: true, home, ...data }, opts.json || opts.format === 'json', () =>
+          process.stdout.write(renderExportMarkdown(data, home)),
+        );
       } finally {
         engine.close();
       }
@@ -562,4 +696,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-void program.parseAsync(process.argv);
+/**
+ * Argument parsing sits outside `run()` on purpose: a custom option parser
+ * (`--limit`, `--kind`, `--budget`, …) throws synchronously out of commander,
+ * so without this the process died with a raw stack trace and `Node.js v22…`
+ * instead of the `error:` line and exit code this CLI documents.
+ */
+function handleParseFailure(err: unknown): void {
+  process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exitCode = err instanceof CommanderUserError ? 1 : 2;
+}
+
+try {
+  void program.parseAsync(process.argv).catch(handleParseFailure);
+} catch (err) {
+  handleParseFailure(err);
+}

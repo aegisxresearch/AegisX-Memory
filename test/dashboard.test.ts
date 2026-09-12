@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { startDashboard } from '../src/cli/dashboard.js';
+import { MAX_DASHBOARD_BODY_BYTES, startDashboard } from '../src/cli/dashboard.js';
 import { Engine } from '../src/core/engine.js';
 import { Store } from '../src/core/store.js';
 import { AegisxError } from '../src/core/types.js';
@@ -54,6 +54,45 @@ function get(url: string, pathname: string): Promise<Reply> {
         }),
       );
     }).on('error', reject);
+  });
+}
+
+/**
+ * A POST with a JSON body — the only shape the dashboard's write endpoint
+ * accepts. Everything (headers, body) is passed through so a test can send the
+ * bytes it means to, including the ones the guards exist to refuse.
+ */
+function postJson(
+  url: string,
+  pathname: string,
+  body: string,
+  headers: Record<string, string> = {},
+): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(pathname, url);
+    const req = http.request(
+      {
+        method: 'POST',
+        hostname: target.hostname,
+        port: target.port,
+        path: target.pathname + target.search,
+        headers: { 'content-type': 'application/json', ...headers },
+      },
+      (res) => {
+        let text = '';
+        res.on('data', (chunk) => (text += chunk));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            body: text,
+            type: String(res.headers['content-type'] ?? ''),
+            headers: res.headers,
+          }),
+        );
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
   });
 }
 
@@ -225,6 +264,11 @@ function all(root: ShimEl, out: ShimEl[] = []): ShimEl[] {
  * captured from the running server, and pump the layout loop to a stop. Shared by
  * the tests that assert on generated UI (the graph detail panel, the recall chart).
  */
+/** Let queued promises (`fetch` → `json` → render) settle. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 3; i++) { await new Promise((r) => setTimeout(r, 0)); }
+}
+
 async function runApp(
   url: string,
   navigatorShim: Record<string, unknown>,
@@ -233,10 +277,15 @@ async function runApp(
   storageShim: { getItem(key: string): string | null; setItem(key: string, value: string): void } = { getItem: () => null, setItem: () => undefined },
   // `innerHeight` + `scrollBy` make the vertical keep-in-view path observable.
   windowShim: Record<string, unknown> = { innerWidth: 1200 },
+  // Per-URL `/api/memory` replies, so a repo page can be driven — and refused —
+  // without a DB behind it. Anything not listed falls through to `/api/data`.
+  memoryResponses: Record<string, { ok: boolean; body: unknown }> = {},
 ): Promise<{
   dom: ReturnType<typeof createDom>;
   graphProjection: { nodes: Array<{ id: string; kind: string; label: string; sub: string | null; repo: string | null }> };
   dataPayload: { recalls: Array<{ tokenEstimate: number }>; [key: string]: unknown };
+  /** Every URL the client fetched, in order — which repos it actually asked for. */
+  requested: string[];
   drive(limit: number): void;
   frames: number;
   /** Fire every scheduled timer once — how the readout's debounce is advanced. */
@@ -251,6 +300,7 @@ async function runApp(
     [key: string]: unknown;
   };
   const dom = createDom();
+  const requested: string[] = [];
   let frames = 0;
   const rafQueue: Array<(t: number) => void> = [];
   const clock = { now: 0 };
@@ -274,7 +324,28 @@ async function runApp(
     windowShim,
     () => ({ matches: false, addEventListener: () => undefined }),
     storageShim,
-    (u: string) => Promise.resolve({ ok: true, json: () => Promise.resolve(u === '/api/graph' ? graphProjection : dataPayload) }),
+    (u: string, init?: { method?: string; body?: string }) => {
+      requested.push(u);
+      const hit = memoryResponses[u];
+      if (hit !== undefined) { return Promise.resolve({ ok: hit.ok, json: () => Promise.resolve(hit.body) }); }
+      // The delete flow runs against the real endpoint, guards and all — a stub
+      // that answered `ok: true` would prove the button exists and nothing else.
+      if (u === '/api/knowledge/delete') {
+        return postJson(url, u, init?.body ?? '{}').then((reply) => ({
+          ok: reply.status === 200,
+          json: () => Promise.resolve(JSON.parse(reply.body) as unknown),
+        }));
+      }
+      // The repo page is served by the real endpoint unless a test overrides it,
+      // so the client is exercised against actual rows rather than a stub shape.
+      if (u.startsWith('/api/memory')) {
+        return get(url, u).then((reply) => ({
+          ok: reply.status === 200,
+          json: () => Promise.resolve(JSON.parse(reply.body) as unknown),
+        }));
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(u === '/api/graph' ? graphProjection : dataPayload) });
+    },
     (cb: (t: number) => void) => { rafQueue.push(cb); return rafQueue.length; },
     () => undefined,
     () => 0,
@@ -291,7 +362,7 @@ async function runApp(
     }
   };
   for (let i = 0; i < 6; i++) { await new Promise((r) => setTimeout(r, 0)); drive(60); }
-  return { dom, graphProjection, dataPayload, drive, frames, runTimers };
+  return { dom, graphProjection, dataPayload, requested, drive, frames, runTimers };
 }
 
 describe('dashboard — local web view', () => {
@@ -487,7 +558,13 @@ describe('dashboard — local web view', () => {
     expect(page.body).not.toMatch(/\son(click|load|error|change|input|submit|focus|blur|mouse\w+)=/i);
 
     const fetches = (js.body.match(/fetch\('[^']+'/g) ?? []).sort();
-    expect(fetches).toEqual(["fetch('/api/data'", "fetch('/api/graph'"]);
+    expect(fetches).toEqual([
+      "fetch('/api/data'",
+      "fetch('/api/graph'",
+      // The one write stays on this origin too; nothing is sent to a third party.
+      "fetch('/api/knowledge/delete'",
+      "fetch('/api/memory?repo='",
+    ]);
   });
 
   it('security: every response carries a fresh CSP nonce and never allows inline', async () => {
@@ -924,5 +1001,424 @@ describe('dashboard — local web view', () => {
     const third = await runApp(stopper.url, {}, { getItem: (k) => junk.get(k) ?? null, setItem: () => undefined });
     expect(third.dom.byId('chart-cap').value).toBe('30');
     expect(barsOf(third.dom.byId('chart'))).toBe(30);
+  });
+
+  it('memory: /api/memory returns one repo’s knowledge, facts and handoffs with true totals', async () => {
+    const repo = path.join(workspace, 'mem-api');
+    const other = path.join(workspace, 'mem-other');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(other, { recursive: true });
+    engine.remember('project.mem-api.stack', 'node', repo);
+    engine.remember('project.mem-other.stack', 'go', other);
+    engine.saveSession(repo, {
+      goal: 'seed the memory browser',
+      facts: ['one fact'],
+      decisions: ['use sqlite over postgres because zero config'],
+      gotchas: ['recall truncates long titles'],
+      conventions: ['two-space indent'],
+      nextSteps: ['read it back'],
+    });
+    engine.saveSession(other, {
+      goal: 'unrelated work',
+      facts: [],
+      decisions: ['a decision from the other repo'],
+      nextSteps: [],
+    });
+
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const url = stopper.url;
+
+    const res = await get(url, '/api/memory?repo=' + encodeURIComponent(repo));
+    expect(res.status).toBe(200);
+    expect(res.type).toContain('application/json');
+    const parsed = JSON.parse(res.body) as {
+      repo: string;
+      facts: Array<{ key: string }>;
+      knowledge: Array<{ id?: number; kind: string; title: string; body: string }>;
+      sessions: Array<{ goal: string; decisions: string[] }>;
+      counts: { facts: number; knowledge: number; sessions: number };
+    };
+    expect(parsed.repo).toBe(repo);
+    expect(parsed.counts).toEqual({ facts: 1, knowledge: 3, sessions: 1 });
+    // The knowledge store's read side: every entry, with the id the delete
+    // command takes and the bodies that recall's ten-item window cuts off.
+    expect(parsed.knowledge.map((k) => k.kind).sort()).toEqual(['convention', 'decision', 'gotcha']);
+    expect(parsed.knowledge.every((k) => typeof k.id === 'number' && k.id > 0)).toBe(true);
+    expect(parsed.knowledge.find((k) => k.kind === 'convention')!.title).toBe('two-space indent');
+    expect(parsed.knowledge.find((k) => k.kind === 'convention')!.body).toBe('two-space indent');
+    // one repo's page never shows another repo's rows
+    expect(parsed.facts.map((f) => f.key)).toEqual(['project.mem-api.stack']);
+    expect(parsed.sessions.map((s) => s.goal)).toEqual(['seed the memory browser']);
+    expect(res.body).not.toContain('unrelated');
+    expect(res.body).not.toContain('project.mem-other');
+
+    // a page needs a repo; asking for none is a caller error, not an empty one
+    expect((await get(url, '/api/memory')).status).toBe(400);
+    expect((await get(url, '/api/memory?repo=')).status).toBe(400);
+  });
+
+  it('memory: a policy-hidden repo is refused, not answered with an empty page', async () => {
+    const allowed = path.join(workspace, 'allowed');
+    const hidden = path.join(workspace, 'hidden');
+    fs.mkdirSync(allowed, { recursive: true });
+    fs.mkdirSync(hidden, { recursive: true });
+    const store = new Store(path.join(workspace, 'memory.sqlite'));
+    store.saveKnowledge(allowed, 'decision', 'allowed decision', 'allowed body', []);
+    store.saveKnowledge(hidden, 'decision', 'hidden decision', 'hidden body', []);
+    store.close();
+
+    // The policy is read when an engine is constructed, so this scenario needs
+    // its own — the module-level one is replaced, and afterEach still owns
+    // closing whatever `engine` points at when the test ends.
+    process.env['AEGISX_ALLOWED_REPOS'] = allowed;
+    engine.close();
+    engine = new Engine(path.join(workspace, 'memory.sqlite'));
+    const dash = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    stopper = dash;
+
+    const denied = await get(dash.url, '/api/memory?repo=' + encodeURIComponent(hidden));
+    expect(denied.status).toBe(403);
+    expect((JSON.parse(denied.body) as { error: string }).error).toMatch(/not in AEGISX_ALLOWED_REPOS/);
+    expect(denied.body).not.toContain('hidden decision');
+
+    const ok = await get(dash.url, '/api/memory?repo=' + encodeURIComponent(allowed));
+    expect(ok.status).toBe(200);
+    expect(ok.body).toContain('allowed decision');
+  });
+
+  it('memory: reads a repo’s knowledge as text, and the graph is not part of that view', async () => {
+    const repo = path.join(workspace, 'browse');
+    fs.mkdirSync(repo, { recursive: true });
+    const store = new Store(path.join(workspace, 'memory.sqlite'));
+    store.saveKnowledge(repo, 'decision', 'pick sqlite over postgres', 'zero-config local storage', []);
+    store.saveKnowledge(repo, 'gotcha', 'recall truncates long titles', 'the dedupe check compares a prefix', []);
+    store.close();
+    engine.remember('project.browse.stack', 'node + ts', repo);
+    engine.saveSession(repo, {
+      goal: 'browse this memory',
+      facts: ['one fact'],
+      decisions: ['ship it'],
+      nextSteps: ['read it back'],
+    });
+
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const written: string[] = [];
+    const prefs = new Map<string, string>();
+    const { dom, requested } = await runApp(
+      stopper.url,
+      { clipboard: { writeText: (t: string) => { written.push(t); return Promise.resolve(); } } },
+      { getItem: (k) => prefs.get(k) ?? null, setItem: (k, v) => { prefs.set(k, v); } },
+    );
+    const memoryUrl = '/api/memory?repo=' + encodeURIComponent(repo);
+
+    // Overview first: the knowledge page costs a fetch, so it is not loaded until asked for.
+    expect(dom.byId('view-overview').hidden).toBe(false);
+    expect(dom.byId('view-memory').hidden).toBe(true);
+    expect(dom.byId('nav-overview').attrs['aria-pressed']).toBe('true');
+    expect(requested).not.toContain(memoryUrl);
+
+    dom.byId('nav-memory').__dispatch('click');
+    await settle();
+
+    expect(dom.byId('view-memory').hidden).toBe(false);
+    expect(dom.byId('view-overview').hidden).toBe(true);
+    expect(dom.byId('nav-memory').attrs['aria-pressed']).toBe('true');
+    expect(dom.byId('nav-overview').attrs['aria-pressed']).toBe('false');
+    expect(prefs.get('aegisx-view')).toBe('memory');
+    expect(requested).toContain(memoryUrl);
+
+    const host = dom.byId('mem-knowledge');
+    const text = host.textContent;
+    // The full sentences — title *and* body — are readable here, which is the
+    // whole point: the graph only ever showed a 50-node projection of them.
+    expect(text).toContain('pick sqlite over postgres');
+    expect(text).toContain('zero-config local storage');
+    expect(text).toContain('recall truncates long titles');
+    expect(text).toContain('the dedupe check compares a prefix');
+    expect(text).toContain('decision');
+    expect(text).toContain('gotcha');
+    // Two saved notes plus the session's own decision, which `save` also records.
+    const cards = all(host).filter((n) => n.classes.has('mem-card'));
+    expect(cards.length).toBe(3);
+    expect(text).toContain('ship it');
+    expect(dom.byId('mem-count').textContent).toBe('3 entries');
+    expect(dom.byId('mem-note').textContent).toContain('3 entries stored for this repo');
+
+    // Nothing in this view is the graph — reading memory here cannot depend on it.
+    expect(all(dom.byId('view-memory')).some((n) => n.attrs['id'] === 'graph')).toBe(false);
+
+    // The same repo's pinned facts and handoffs come along, full lists intact.
+    expect(dom.byId('mem-facts').textContent).toContain('project.browse.stack');
+    expect(dom.byId('mem-facts').textContent).toContain('node + ts');
+    expect(dom.byId('mem-sessions').textContent).toContain('browse this memory');
+    expect(dom.byId('mem-sessions').textContent).toContain('ship it');
+
+    // Copy hands over the whole entry, not a label — and the cards follow the
+    // newest-first order the endpoint returned.
+    const live = JSON.parse((await get(stopper.url, memoryUrl)).body) as {
+      knowledge: Array<{ kind: string; title: string; body: string }>;
+    };
+    const newest = live.knowledge[0]!;
+    expect(cards[0]!.textContent).toContain(newest.title);
+    const copy = all(cards[0]!).find((e) => e.tag === 'button' && e.classes.has('copy'));
+    expect(copy).toBeDefined();
+    copy!.__dispatch('click');
+    await settle();
+    expect(written).toEqual([newest.kind + ': ' + newest.title + '\n\n' + newest.body]);
+    expect(copy!.textContent).toBe('copied');
+
+    // The stored view is honoured by a fresh script.
+    const again = await runApp(stopper.url, {}, { getItem: (k) => prefs.get(k) ?? null, setItem: (k, v) => { prefs.set(k, v); } });
+    expect(again.dom.byId('view-memory').hidden).toBe(false);
+    expect(again.requested).toContain(memoryUrl);
+  });
+
+  it('memory: filters, the repo picker and the truncation note stay honest', async () => {
+    const alpha = path.join(workspace, 'alpha');
+    const beta = path.join(workspace, 'beta');
+    const refused = path.join(workspace, 'refused');
+    for (const dir of [alpha, beta, refused]) { fs.mkdirSync(dir, { recursive: true }); }
+    const store = new Store(path.join(workspace, 'memory.sqlite'));
+    store.saveKnowledge(alpha, 'decision', 'alpha decision', 'alpha rationale', []);
+    store.saveKnowledge(alpha, 'gotcha', 'alpha trap', 'the trap body', []);
+    store.saveKnowledge(beta, 'convention', 'beta convention', 'beta rule', []);
+    store.saveKnowledge(refused, 'lesson', 'refused lesson', 'cannot be read', []);
+    store.close();
+
+    const dash = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    stopper = dash;
+    const liveFor = async (repo: string): Promise<Record<string, unknown>> =>
+      JSON.parse((await get(dash.url, '/api/memory?repo=' + encodeURIComponent(repo))).body) as Record<string, unknown>;
+
+    // Real payloads, except one repo whose stored total is inflated to 9 so the
+    // "showing the newest 2 of 9" line has something true to say.
+    const alphaPayload = await liveFor(alpha);
+    const responses = {
+      // Keys are the URLs the client actually builds — paths are percent-encoded.
+      ['/api/memory?repo=' + encodeURIComponent(alpha)]: {
+        ok: true,
+        body: { ...alphaPayload, counts: { ...(alphaPayload['counts'] as object), knowledge: 9 } },
+      },
+      ['/api/memory?repo=' + encodeURIComponent(beta)]: { ok: true, body: await liveFor(beta) },
+      ['/api/memory?repo=' + encodeURIComponent(refused)]: {
+        ok: false,
+        body: { error: 'repo "' + refused + '" is not in AEGISX_ALLOWED_REPOS' },
+      },
+    };
+
+    const { dom, requested } = await runApp(
+      stopper.url,
+      {},
+      { getItem: () => null, setItem: () => undefined },
+      { innerWidth: 1200 },
+      responses,
+    );
+    const memoryUrl = (repo: string): string => '/api/memory?repo=' + encodeURIComponent(repo);
+
+    dom.byId('nav-memory').__dispatch('click');
+    await settle();
+    expect(requested).toContain(memoryUrl(alpha));
+
+    // The picker offers every repo, and the page opens on the first one.
+    const picker = dom.byId('mem-repo');
+    expect(all(picker).filter((n) => n.tag === 'option').map((o) => o.textContent)).toEqual([alpha, beta, refused]);
+    expect(picker.value).toBe(alpha);
+
+    // …and says how much of the store it did not load instead of implying it showed all of it.
+    expect(dom.byId('mem-note').textContent).toContain('showing the newest 2 of 9 entries stored for this repo');
+    expect(dom.byId('mem-count').textContent).toBe('9 entries');
+
+    // A kind chip is a filter, and its count is the loaded one.
+    const kinds = all(dom.byId('mem-kinds')).filter((n) => n.classes.has('chip'));
+    expect(kinds.map((k) => k.textContent)).toEqual(['decision 1', 'gotcha 1', 'convention', 'lesson']);
+    const gotchaChip = kinds.find((k) => k.textContent === 'gotcha 1')!;
+    gotchaChip.__dispatch('click');
+    expect(gotchaChip.attrs['aria-pressed']).toBe('false');
+    expect(dom.byId('mem-knowledge').textContent).not.toContain('alpha trap');
+    expect(dom.byId('mem-knowledge').textContent).toContain('alpha decision');
+    expect(dom.byId('mem-note').textContent).toContain('1 shown after filters');
+    gotchaChip.__dispatch('click');
+    expect(dom.byId('mem-knowledge').textContent).toContain('alpha trap');
+
+    // The search box narrows over title, body and id.
+    const search = dom.byId('mem-search');
+    search.value = 'the trap body';
+    search.__dispatch('input');
+    expect(dom.byId('mem-knowledge').textContent).toContain('alpha trap');
+    expect(dom.byId('mem-knowledge').textContent).not.toContain('alpha decision');
+    expect(dom.byId('mem-note').textContent).toContain('1 shown after filters');
+    search.value = 'nothing matches this';
+    search.__dispatch('input');
+    expect(dom.byId('mem-knowledge').textContent).toContain('No entry matches the current filters');
+    search.value = '';
+    search.__dispatch('input');
+
+    // Switching repos refetches — one repo's page never shows another's memory.
+    picker.value = beta;
+    picker.__dispatch('change');
+    await settle();
+    expect(requested).toContain(memoryUrl(beta));
+    expect(dom.byId('mem-knowledge').textContent).toContain('beta convention');
+    expect(dom.byId('mem-knowledge').textContent).not.toContain('alpha decision');
+    expect(picker.value).toBe(beta);
+    expect(dom.byId('mem-note').textContent).toContain('1 entry stored for this repo');
+
+    // A refused repo is shown as the refusal it is, never as an empty repo.
+    picker.value = refused;
+    picker.__dispatch('change');
+    await settle();
+    expect(requested).toContain(memoryUrl(refused));
+    expect(dom.byId('mem-note').textContent).toContain('is not in AEGISX_ALLOWED_REPOS');
+    expect(dom.byId('mem-knowledge').textContent).toContain('is not in AEGISX_ALLOWED_REPOS');
+    expect(dom.byId('mem-knowledge').textContent).not.toContain('refused lesson');
+  });
+
+  it('memory: deletion is a guarded POST that trusts nothing but the dashboard itself', async () => {
+    const repo = path.join(workspace, 'del');
+    const hidden = path.join(workspace, 'del-hidden');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(hidden, { recursive: true });
+    const store = new Store(path.join(workspace, 'memory.sqlite'));
+    store.saveKnowledge(repo, 'decision', 'keep me', 'body one', []);
+    const doomed = store.saveKnowledge(repo, 'gotcha', 'remove me', 'body two', []);
+    const hiddenRow = store.saveKnowledge(hidden, 'decision', 'hidden entry', 'hidden body', []);
+    store.close();
+
+    // The allowlist is read when an engine is constructed, so this scenario owns
+    // its own — as in the read-side test above.
+    process.env['AEGISX_ALLOWED_REPOS'] = repo;
+    engine.close();
+    engine = new Engine(path.join(workspace, 'memory.sqlite'));
+    const dash = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    stopper = dash;
+    const url = dash.url;
+    const del = '/api/knowledge/delete';
+    const body = (id: number): string => JSON.stringify({ id });
+    const titles = (repoPath: string): string[] =>
+      engine.repoMemory(repoPath, 50).knowledge.map((k) => k.title);
+
+    // The method is the first guard: an <img> or a link (the shapes a hostile
+    // page can aim at a localhost server without a preflight) can only GET.
+    const got = await get(url, del);
+    expect(got.status).toBe(405);
+    expect(got.headers['allow']).toBe('POST');
+
+    // A form-shaped body cannot even reach the parser, and a cross-origin fetch
+    // with a JSON body would need a preflight this server never grants.
+    const form = await postJson(url, del, 'id=1', { 'content-type': 'application/x-www-form-urlencoded' });
+    expect(form.status).toBe(415);
+    expect(form.body).toContain('application/json');
+    const otherPort = await postJson(url, del, body(doomed.id!), { origin: 'http://127.0.0.1:9' });
+    expect(otherPort.status).toBe(403);
+    expect(otherPort.body).toContain('cross-origin');
+    const crossSite = await postJson(url, del, body(doomed.id!), { 'sec-fetch-site': 'cross-site' });
+    expect(crossSite.status).toBe(403);
+
+    // A page that points its own domain at 127.0.0.1 must not reach this either.
+    const rebind = await postJson(url, del, body(doomed.id!), { host: 'aegisx.attacker.test' });
+    expect(rebind.status).toBe(403);
+    expect(rebind.body).toContain('DNS-rebinding');
+
+    // None of those refusals was a deletion.
+    expect(titles(repo)).toContain('remove me');
+
+    // The body must name a positive integer id — never coerced, never guessed.
+    for (const bad of ['{}', '{"id":"3"}', '{"id":0}', '{"id":-1}', '{"id":1.5}', '{"id":null}']) {
+      const res = await postJson(url, del, bad);
+      expect(res.status).toBe(400);
+      expect(res.body).toContain('positive integer');
+    }
+    // Unparseable JSON is also a 400, and it says why without echoing anything.
+    const garbage = await postJson(url, del, 'not json');
+    expect(garbage.status).toBe(400);
+    expect(garbage.body).toContain('not valid JSON');
+    expect(garbage.body).not.toContain('remove me');
+    const oversized = await postJson(
+      url,
+      del,
+      JSON.stringify({ id: doomed.id, pad: 'x'.repeat(MAX_DASHBOARD_BODY_BYTES) }),
+    );
+    expect(oversized.status).toBe(413);
+    expect(oversized.body).toContain('too large');
+
+    // An unknown id is a 404, not a quiet success.
+    const unknown = await postJson(url, del, body(999_999));
+    expect(unknown.status).toBe(404);
+    expect(unknown.body).toContain('no knowledge entry');
+
+    // A repo the policy hides is refused on the write side exactly as on the
+    // read side, and its row is untouched.
+    const denied = await postJson(url, del, body(hiddenRow.id!));
+    expect(denied.status).toBe(403);
+    expect(denied.body).toContain('not in AEGISX_ALLOWED_REPOS');
+    const check = new Store(path.join(workspace, 'memory.sqlite'));
+    expect(check.listKnowledge(50).map((k) => k.title)).toContain('hidden entry');
+    check.close();
+
+    // The caller that looks like this very page succeeds, and the row is gone.
+    const ok = await postJson(url, del, body(doomed.id!), { origin: url, 'sec-fetch-site': 'same-origin' });
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(ok.body)).toEqual({ ok: true, id: doomed.id, deleted: true });
+    expect(titles(repo)).not.toContain('remove me');
+    expect(titles(repo)).toContain('keep me');
+    // Deleting it twice is honest about the second finding nothing.
+    expect((await postJson(url, del, body(doomed.id!))).status).toBe(404);
+  });
+
+  it('memory: the page deletes an entry through that endpoint, asking first', async () => {
+    const repo = path.join(workspace, 'del-ui');
+    fs.mkdirSync(repo, { recursive: true });
+    const store = new Store(path.join(workspace, 'memory.sqlite'));
+    store.saveKnowledge(repo, 'decision', 'keep this one', 'still here', []);
+    store.saveKnowledge(repo, 'gotcha', 'delete this one', 'goes away', []);
+    store.close();
+
+    stopper = await startDashboard({ port: 0, host: '127.0.0.1', open: false }, engine);
+    const { dom, requested } = await runApp(stopper.url, {}, { getItem: () => null, setItem: () => undefined });
+    dom.byId('nav-memory').__dispatch('click');
+    await settle();
+    expect(dom.byId('mem-knowledge').textContent).toContain('delete this one');
+
+    const del = '/api/knowledge/delete';
+    const removeBtn = (): ShimEl | undefined =>
+      all(dom.byId('mem-knowledge')).find((e) => e.tag === 'button' && e.classes.has('btn--quiet-danger'));
+    const confirmBtn = (): ShimEl | undefined =>
+      all(dom.byId('mem-knowledge')).find((e) => e.tag === 'button' && e.classes.has('btn--danger'));
+    const confirmBox = (): ShimEl | undefined =>
+      all(dom.byId('mem-knowledge')).find((n) => n.classes.has('mem-card__confirm'));
+
+    // One click only asks. Nothing is sent on the first click — that is the
+    // whole point of a two-step delete.
+    removeBtn()!.__dispatch('click');
+    expect(requested).not.toContain(del);
+    expect(confirmBox()).toBeDefined();
+    expect(confirmBox()!.textContent).toContain('Delete #');
+    expect(confirmBox()!.textContent).toContain('permanent');
+
+    // Cancel is a real way out: the question goes, the request never does.
+    const cancel = all(confirmBox()!).find((e) => e.tag === 'button' && e.textContent === 'cancel')!;
+    cancel.__dispatch('click');
+    expect(confirmBox()).toBeUndefined();
+    expect(requested).not.toContain(del);
+
+    // Ask again, then confirm for real.
+    removeBtn()!.__dispatch('click');
+    confirmBtn()!.__dispatch('click');
+    await settle();
+    expect(requested).toContain(del);
+
+    // Server, list and totals all agree, and the page says what it did.
+    const live = JSON.parse((await get(stopper.url, '/api/memory?repo=' + encodeURIComponent(repo))).body) as {
+      knowledge: Array<{ title: string }>;
+      counts: { knowledge: number };
+    };
+    expect(live.knowledge.map((k) => k.title)).toEqual(['keep this one']);
+    expect(live.counts.knowledge).toBe(1);
+    expect(dom.byId('mem-knowledge').textContent).not.toContain('goes away');
+    expect(dom.byId('mem-knowledge').textContent).toContain('keep this one');
+    expect(confirmBox()).toBeUndefined();
+    expect(dom.byId('mem-note').textContent).toContain('deleted #');
+    expect(dom.byId('mem-note').textContent).toContain('1 entry stored for this repo');
+    expect(dom.byId('mem-count').textContent).toBe('1 entries');
   });
 });

@@ -12,9 +12,17 @@ import { normalizeRepoPath, parseAllowedRepos, assertRepoAllowed } from './paths
 import { Store, ftsEscape, knowledgeTitle, KNOWLEDGE_BACKFILL_META } from './store.js';
 import { Indexer, isSecretBearingFile } from '../indexer/indexer.js';
 import { containsSecret } from './secrets.js';
-import { AegisxError, type FactHistoryEntry, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats, type SessionHandoff, type SessionHandoffInput, type SessionSaveSummary } from './types.js';
+import { AegisxError, type FactHistoryEntry, type KnowledgeKind, type KnowledgeRecord, type MemoryExport, type MemoryFact, type ObservabilityStats, type RecallResult, type RepoMemory, type RepoSummary, type ScanStats, type SessionHandoff, type SessionHandoffInput, type SessionSaveSummary } from './types.js';
 
 export const DEFAULT_TOKEN_BUDGET = 2_000;
+/** Per-store row cap for `export` — a local store is small, and a whole-table
+ *  load is the one thing that is not. The dump reports the cap so a truncated
+ *  list is visible rather than silent. */
+export const EXPORT_ROW_LIMIT = 5_000;
+/** Per-list row cap for the dashboard's memory browser. Generous enough that a
+ *  real repository's whole history loads and client-side search is complete,
+ *  with the true totals reported alongside so any cut is visible. */
+export const MEMORY_BROWSER_LIMIT = 500;
 const CHARS_PER_TOKEN = 4; // rough estimator, deliberately conservative
 
 export class Engine {
@@ -31,6 +39,17 @@ export class Engine {
   /** Reject repos outside the configured allowlist (no-op when unrestricted). */
   private guardRepo(repo: string): void {
     assertRepoAllowed(repo, this.allowedRepos);
+  }
+
+  /** True when the allowlist policy permits this repo (always true when
+   *  unrestricted) — the read-side twin of `guardRepo`. */
+  private repoVisible(repo: string): boolean {
+    try {
+      this.guardRepo(repo);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Global-recall cross-project filter: drop knowledge from non-allowed repos. */
@@ -98,6 +117,159 @@ export class Engine {
   /** Superseded values across every key, newest first. */
   recentHistory(limit?: number): FactHistoryEntry[] {
     return this.store.recentFactHistory(limit);
+  }
+
+  /**
+   * Browse or search the knowledge store (decisions, gotchas, conventions,
+   * lessons) as its owner sees it: every repo by default, or one repo, at most
+   * one kind, or an FTS query — with no token budget and no ranked-window cap.
+   * This is the read side of what `save` records; recall stays the agent's
+   * budgeted window.
+   *
+   * An empty query is a user error rather than an empty list, matching
+   * `recall`; a query that builds a clause but matches nothing simply returns
+   * nothing.
+   */
+  listKnowledge(opts: { query?: string; kind?: KnowledgeKind; repoAbsPath?: string; limit?: number } = {}): KnowledgeRecord[] {
+    const repo = opts.repoAbsPath === undefined ? undefined : normalizeRepoPath(opts.repoAbsPath);
+    if (repo !== undefined) {
+      this.guardRepo(repo);
+    }
+    if (opts.query !== undefined && ftsEscape(opts.query) === null) {
+      throw new AegisxError('user', 'query contains no searchable terms');
+    }
+    const rows = this.store.knowledgeList({
+      ...(opts.query === undefined ? {} : { query: opts.query }),
+      ...(opts.kind === undefined ? {} : { kind: opts.kind }),
+      ...(repo === undefined ? {} : { repo }),
+      ...(opts.limit === undefined ? {} : { limit: opts.limit }),
+    });
+    // A single-repo listing was guarded above; a cross-repo one must not reveal
+    // entries from repos the policy hides.
+    return repo === undefined ? this.filterAllowedKnowledge(rows) : rows;
+  }
+
+  /**
+   * How many knowledge entries the same browse would return *without* a limit.
+   *
+   * Every listing in this project is capped, so the cap has to be visible: this
+   * is the number that lets `aegisxmemory knowledge` say "showing the newest 50
+   * of 1,204" instead of leaving a reader to assume the store holds fifty. The
+   * unsupported query contract is identical to `listKnowledge`'s — an empty
+   * query is a user error rather than a zero.
+   *
+   * Cross-repo counting cannot be done in one SQL pass when a policy is in
+   * force, so the allowlisted case sums one guarded count per allowed repo: a
+   * hidden repo contributes nothing to the total it is hidden from.
+   */
+  countKnowledge(opts: { query?: string; kind?: KnowledgeKind; repoAbsPath?: string } = {}): number {
+    const repo = opts.repoAbsPath === undefined ? undefined : normalizeRepoPath(opts.repoAbsPath);
+    if (repo !== undefined) {
+      this.guardRepo(repo);
+    }
+    if (opts.query !== undefined && ftsEscape(opts.query) === null) {
+      throw new AegisxError('user', 'query contains no searchable terms');
+    }
+    const filters = {
+      ...(opts.query === undefined ? {} : { query: opts.query }),
+      ...(opts.kind === undefined ? {} : { kind: opts.kind }),
+    };
+    if (repo !== undefined) {
+      return this.store.countKnowledgeList({ ...filters, repo });
+    }
+    const allowed = this.allowedRepos;
+    if (allowed === null) {
+      return this.store.countKnowledgeList(filters);
+    }
+    let total = 0;
+    for (const candidate of allowed) {
+      total += this.store.countKnowledgeList({ ...filters, repo: candidate });
+    }
+    return total;
+  }
+
+  /**
+   * Per-repo memory totals for every visible repository, largest first.
+   *
+   * These are the exact numbers the dashboard's repo picker and memory page
+   * report (`Store.countForRepo`), shared rather than reimplemented so that
+   * `aegisxmemory knowledge --repos` and the browser cannot disagree about what
+   * a repository holds.
+   */
+  repoMemorySummaries(): Array<{ repo: string; counts: { facts: number; knowledge: number; sessions: number } }> {
+    return this.store
+      .listRepos()
+      .filter((candidate) => this.repoVisible(candidate))
+      .map((candidate) => ({ repo: candidate, counts: this.store.countForRepo(candidate) }))
+      .sort((a, b) => b.counts.knowledge - a.counts.knowledge || a.repo.localeCompare(b.repo));
+  }
+
+  /** Delete one knowledge entry by id. Repo-gated: an allowlist that hides a
+   *  repo must not allow deleting from it either. False when the id is unknown. */
+  forgetKnowledge(id: number): boolean {
+    const repo = this.store.knowledgeRepoOf(id);
+    if (repo === undefined) {
+      return false;
+    }
+    this.guardRepo(repo);
+    return this.store.forgetKnowledge(id);
+  }
+
+  /**
+   * Whole-memory dump for `aegisxmemory export`: repos, facts, knowledge and
+   * full handoffs. Owner-facing and allowlist-gated — a hidden repo contributes
+   * neither its rows nor its counts. Facts with no repo hint are global, so a
+   * full dump keeps them and a repo-scoped one leaves them out.
+   */
+  exportMemory(repoAbsPath?: string): MemoryExport {
+    const repo = repoAbsPath === undefined ? undefined : normalizeRepoPath(repoAbsPath);
+    if (repo !== undefined) {
+      this.guardRepo(repo);
+    }
+    const visible = repo === undefined
+      ? this.store.listRepos().filter((candidate) => this.repoVisible(candidate))
+      : [repo];
+    const repos: RepoSummary[] = visible.map((candidate) => {
+      const scanAgg = this.store.scanAggregate(candidate);
+      const recallAgg = this.store.recallAggregate(candidate);
+      return {
+        repo: candidate,
+        files: scanAgg.lastFilesTotal ?? 0,
+        symbols: scanAgg.lastSymbolsTotal ?? 0,
+        scans: scanAgg.totalScans,
+        recalls: recallAgg.totalRecalls,
+        hitRate: recallAgg.hitRate,
+        tokensSavedEstimate: recallAgg.tokensSavedEstimate,
+      };
+    });
+    const facts = this.store.listFacts(EXPORT_ROW_LIMIT).filter((fact) => {
+      if (fact.repoHint === null) {
+        return repo === undefined; // global facts belong to no repo, so a scoped dump omits them
+      }
+      return repo === undefined ? this.repoVisible(fact.repoHint) : fact.repoHint === repo;
+    });
+    const knowledgeRows = this.store.knowledgeList({
+      ...(repo === undefined ? {} : { repo }),
+      limit: EXPORT_ROW_LIMIT,
+    });
+    const knowledge = repo === undefined ? this.filterAllowedKnowledge(knowledgeRows) : knowledgeRows;
+    const sessions = this.store
+      .listSessions(EXPORT_ROW_LIMIT)
+      .filter((session) => (repo === undefined ? this.repoVisible(session.repo) : session.repo === repo));
+    return {
+      generatedAt: new Date().toISOString(),
+      rowLimit: EXPORT_ROW_LIMIT,
+      totals: {
+        repos: repos.length,
+        facts: facts.length,
+        knowledge: knowledge.length,
+        sessions: sessions.length,
+      },
+      repos,
+      facts,
+      knowledge,
+      sessions,
+    };
   }
 
   saveSession(repoAbsPath: string, input: SessionHandoffInput): SessionSaveSummary {
@@ -181,14 +353,7 @@ export class Engine {
     recalls: Array<{ repo: string; query: string | null; tokenEstimate: number; hit: boolean; createdAt: string }>;
     totals: { facts: number; knowledge: number; sessions: number };
   } {
-    const repos = this.store.listRepos().filter((repo) => {
-      try {
-        this.guardRepo(repo);
-        return true;
-      } catch {
-        return false; // hidden by the allowlist policy, not an error
-      }
-    });
+    const repos = this.store.listRepos().filter((repo) => this.repoVisible(repo));
     const perRepo = repos.map((repo) => {
       const scanAgg = this.store.scanAggregate(repo);
       const recallAgg = this.store.recallAggregate(repo);
@@ -212,6 +377,29 @@ export class Engine {
         knowledge: this.store.countKnowledge(),
         sessions: this.store.countSessions(),
       },
+    };
+  }
+
+  /**
+   * One repository's whole memory as a readable page: knowledge with bodies
+   * intact, pinned facts, and handoffs with their lists — the read path the
+   * knowledge store was missing outside `recall`'s ten-item window and the
+   * graph's 50-node projection. No token budget, no ranking; repo-gated like
+   * every other repo-scoped read, so a policy-hidden repo throws instead of
+   * answering with an empty page.
+   *
+   * The lists are capped (see `MEMORY_BROWSER_LIMIT`) while `counts` reports the
+   * repository's true totals, so the caller can say how much it did not show.
+   */
+  repoMemory(repoAbsPath: string, limit = MEMORY_BROWSER_LIMIT): RepoMemory {
+    const repo = normalizeRepoPath(repoAbsPath);
+    this.guardRepo(repo);
+    return {
+      repo,
+      facts: this.store.factsForRepo(repo, limit),
+      knowledge: this.store.knowledgeList({ repo, limit }),
+      sessions: this.store.sessionsForRepo(repo, limit),
+      counts: this.store.countForRepo(repo),
     };
   }
 

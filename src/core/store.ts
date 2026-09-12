@@ -13,6 +13,7 @@ import {
   type KnowledgeRecord,
   type MemoryFact,
   type SessionHandoff,
+  type SessionRecord,
   type SessionSaveSummary,
   type HandoffNotes,
 } from './types.js';
@@ -83,6 +84,30 @@ interface HistoryRow {
   value: string;
   repo_hint: string | null;
   replaced_at: string;
+}
+
+/** Row shape of the knowledge table — every read selects the same columns, so
+ *  they all map through `toKnowledge`. */
+interface KnowledgeRow {
+  id: number;
+  repo: string;
+  kind: string;
+  title: string;
+  body: string;
+  anchors: string;
+  updated_at: string;
+}
+
+/** Row shape of a stored handoff, its note lists still JSON-encoded. */
+interface SessionRow {
+  repo: string;
+  goal: string;
+  facts: string;
+  decisions: string;
+  gotchas: string;
+  conventions: string;
+  next_steps: string;
+  created_at: string;
 }
 
 /** Most recent superseded value for a key — the only history recall needs. */
@@ -342,6 +367,18 @@ export class Store {
     return trimmed;
   }
 
+  private toKnowledge(row: KnowledgeRow): KnowledgeRecord {
+    return {
+      id: row.id,
+      kind: row.kind as KnowledgeKind,
+      title: row.title,
+      body: row.body,
+      anchors: JSON.parse(row.anchors) as string[],
+      updatedAt: row.updated_at,
+      repo: row.repo,
+    };
+  }
+
   private toFact(row: FactRow): MemoryFact {
     const fact: MemoryFact = {
       key: row.key,
@@ -506,10 +543,10 @@ export class Store {
     this.validateKnowledge(kind, title, body);
     const encoded = JSON.stringify(anchors);
     const existing = this.prepared(
-      'SELECT body, anchors, updated_at FROM knowledge WHERE repo = ? AND kind = ? AND title = ?',
-    ).get(repo, kind, title) as { body: string; anchors: string; updated_at: string } | undefined;
+      'SELECT id, body, anchors, updated_at FROM knowledge WHERE repo = ? AND kind = ? AND title = ?',
+    ).get(repo, kind, title) as { id: number; body: string; anchors: string; updated_at: string } | undefined;
     if (existing !== undefined && existing.body === body && existing.anchors === encoded) {
-      return { kind, title, body, anchors, updatedAt: existing.updated_at };
+      return { id: existing.id, kind, title, body, anchors, updatedAt: existing.updated_at };
     }
     const now = new Date().toISOString();
     this.prepared(
@@ -517,7 +554,13 @@ export class Store {
        ON CONFLICT(repo, kind, title) DO UPDATE SET
          body = excluded.body, anchors = excluded.anchors, updated_at = excluded.updated_at`,
     ).run(repo, kind, title, body, encoded, now);
-    const record: KnowledgeRecord = { kind, title, body, anchors, updatedAt: now };
+    // An upsert keeps the row (and so its id), so the id is the existing one
+    // when there was one; only a fresh insert needs to read it back. Handing the
+    // id back is what lets a caller delete the entry it just wrote.
+    const id = existing !== undefined
+      ? existing.id
+      : (this.prepared('SELECT id FROM knowledge WHERE repo = ? AND kind = ? AND title = ?').get(repo, kind, title) as { id: number }).id;
+    const record: KnowledgeRecord = { id, kind, title, body, anchors, updatedAt: now };
     if (existing !== undefined) {
       record.updated = true;
     }
@@ -545,16 +588,9 @@ export class Store {
 
   knowledgeForRepo(repo: string, limit = 20): KnowledgeRecord[] {
     const rows = this.prepared(
-      `SELECT kind, title, body, anchors, updated_at FROM knowledge WHERE repo = ? ORDER BY updated_at DESC LIMIT ?`,
-    ).all(repo, limit) as Array<{ kind: string; title: string; body: string; anchors: string; updated_at: string }>;
-    return rows.map((row) => ({
-      kind: row.kind as KnowledgeKind,
-      title: row.title,
-      body: row.body,
-      anchors: JSON.parse(row.anchors) as string[],
-      updatedAt: row.updated_at,
-      repo,
-    }));
+      `SELECT id, repo, kind, title, body, anchors, updated_at FROM knowledge WHERE repo = ? ORDER BY updated_at DESC LIMIT ?`,
+    ).all(repo, limit) as KnowledgeRow[];
+    return rows.map((row) => this.toKnowledge(row));
   }
 
   searchKnowledge(query: string, repo: string | null, limit = 10): KnowledgeRecord[] {
@@ -562,26 +598,13 @@ export class Store {
     if (ftsQuery === null) {
       return [];
     }
-    const base = `SELECT k.repo, k.kind, k.title, k.body, k.anchors, k.updated_at
+    const base = `SELECT k.id, k.repo, k.kind, k.title, k.body, k.anchors, k.updated_at
        FROM knowledge_fts fts JOIN knowledge k ON k.id = fts.rowid
        WHERE knowledge_fts MATCH ?`;
-    const rows = (
-      repo === null
-        ? (this.prepared(`${base} ORDER BY rank LIMIT ?`).all(ftsQuery, limit) as Array<{
-            repo: string; kind: string; title: string; body: string; anchors: string; updated_at: string;
-          }>)
-        : (this.prepared(`${base} AND k.repo = ? ORDER BY rank LIMIT ?`).all(ftsQuery, repo, limit) as Array<{
-            repo: string; kind: string; title: string; body: string; anchors: string; updated_at: string;
-          }>)
-    ).map((row) => ({
-      kind: row.kind as KnowledgeKind,
-      title: row.title,
-      body: row.body,
-      anchors: JSON.parse(row.anchors) as string[],
-      updatedAt: row.updated_at,
-      repo: row.repo,
-    }));
-    return rows;
+    const rows = repo === null
+      ? (this.prepared(`${base} ORDER BY rank LIMIT ?`).all(ftsQuery, limit) as KnowledgeRow[])
+      : (this.prepared(`${base} AND k.repo = ? ORDER BY rank LIMIT ?`).all(ftsQuery, repo, limit) as KnowledgeRow[]);
+    return rows.map((row) => this.toKnowledge(row));
   }
 
   countKnowledge(): number {
@@ -833,16 +856,92 @@ export class Store {
   /** All knowledge records across repos, newest first (dashboard graph; owner-facing). */
   listKnowledge(limit = 50): KnowledgeRecord[] {
     const rows = this.prepared(
-      `SELECT repo, kind, title, body, anchors, updated_at FROM knowledge ORDER BY updated_at DESC, id DESC LIMIT ?`,
-    ).all(limit) as Array<{ repo: string; kind: string; title: string; body: string; anchors: string; updated_at: string }>;
-    return rows.map((row) => ({
-      kind: row.kind as KnowledgeKind,
-      title: row.title,
-      body: row.body,
-      anchors: JSON.parse(row.anchors) as string[],
-      updatedAt: row.updated_at,
-      repo: row.repo,
-    }));
+      `SELECT id, repo, kind, title, body, anchors, updated_at FROM knowledge ORDER BY updated_at DESC, id DESC LIMIT ?`,
+    ).all(limit) as KnowledgeRow[];
+    return rows.map((row) => this.toKnowledge(row));
+  }
+
+  /**
+   * Knowledge for browsing (`aegisxmemory knowledge`): every repo or one, at
+   * most one kind, optionally FTS-ranked by a query. Distinct from
+   * `searchKnowledge` — that always searches and is shaped for recall's ranked
+   * window; this one also answers "what is stored, newest first".
+   *
+   * A query with no searchable terms matches nothing (rather than silently
+   * listing everything), so the caller can tell the two apart and say so.
+   */
+  knowledgeList(opts: { query?: string; kind?: KnowledgeKind; repo?: string; limit?: number }): KnowledgeRecord[] {
+    const q = this.knowledgeFilter(opts);
+    if (q === null) {
+      return [];
+    }
+    const sql = `SELECT k.id, k.repo, k.kind, k.title, k.body, k.anchors, k.updated_at
+       FROM ${q.from}${q.where}
+       ORDER BY ${opts.query === undefined ? 'k.updated_at DESC, k.id DESC' : 'rank'} LIMIT ?`;
+    const rows = this.prepared(sql).all(...q.params, opts.limit ?? 50) as KnowledgeRow[];
+    return rows.map((row) => this.toKnowledge(row));
+  }
+
+  /**
+   * How many rows `knowledgeList` would return for the same filters. The two
+   * share one WHERE builder on purpose: a cap is only honest if the total beside
+   * it describes the very list it was applied to, and a total that drifts from
+   * its list is worse than no total at all.
+   */
+  countKnowledgeList(opts: { query?: string; kind?: KnowledgeKind; repo?: string }): number {
+    const q = this.knowledgeFilter(opts);
+    if (q === null) {
+      return 0;
+    }
+    const row = this.prepared(`SELECT COUNT(*) AS n FROM ${q.from}${q.where}`).get(...q.params) as { n: number };
+    return row.n;
+  }
+
+  /** Shared FROM/WHERE for a knowledge browse and its count. `null` means the
+   *  query had no searchable terms, which matches nothing — the same contract
+   *  `searchKnowledge` keeps, so callers can tell "nothing matched" from "no
+   *  query at all". */
+  private knowledgeFilter(opts: { query?: string; kind?: KnowledgeKind; repo?: string }): {
+    from: string;
+    where: string;
+    params: Array<string | number>;
+  } | null {
+    const ftsQuery = opts.query === undefined ? null : buildFtsQuery(opts.query);
+    if (opts.query !== undefined && ftsQuery === null) {
+      return null;
+    }
+    const conditions: string[] = [];
+    const params: Array<string | number> = [];
+    if (ftsQuery !== null) {
+      conditions.push('knowledge_fts MATCH ?');
+      params.push(ftsQuery);
+    }
+    if (opts.kind !== undefined) {
+      conditions.push('k.kind = ?');
+      params.push(opts.kind);
+    }
+    if (opts.repo !== undefined) {
+      conditions.push('k.repo = ?');
+      params.push(opts.repo);
+    }
+    return {
+      from: `knowledge k${ftsQuery === null ? '' : ' JOIN knowledge_fts fts ON fts.rowid = k.id'}`,
+      where: conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`,
+      params,
+    };
+  }
+
+  /** Owning repo of a knowledge row, or undefined when the id is unknown. */
+  knowledgeRepoOf(id: number): string | undefined {
+    const row = this.prepared('SELECT repo FROM knowledge WHERE id = ?').get(id) as { repo: string } | undefined;
+    return row?.repo;
+  }
+
+  /** Delete one knowledge entry by id. The `knowledge_ad` trigger keeps the FTS
+   *  index in step, so a deleted entry stops matching immediately. */
+  forgetKnowledge(id: number): boolean {
+    const res: RunResult = this.prepared('DELETE FROM knowledge WHERE id = ?').run(id);
+    return res.changes > 0;
   }
 
   /** Recent handoffs across repos with item counts (no full bodies needed). */
@@ -867,6 +966,50 @@ export class Store {
       nextSteps: (JSON.parse(row.next_steps) as string[]).length,
       createdAt: row.created_at,
     }));
+  }
+
+  /** One session row → `SessionRecord`, with the JSON lists decoded. */
+  private toSession(row: SessionRow): SessionRecord {
+    return {
+      repo: row.repo,
+      goal: row.goal,
+      facts: JSON.parse(row.facts) as string[],
+      decisions: JSON.parse(row.decisions) as string[],
+      gotchas: JSON.parse(row.gotchas) as string[],
+      conventions: JSON.parse(row.conventions) as string[],
+      nextSteps: JSON.parse(row.next_steps) as string[],
+      createdAt: row.created_at,
+    };
+  }
+
+  /** Every stored handoff with its lists intact, newest first (`export`). */
+  listSessions(limit = 100): SessionRecord[] {
+    const rows = this.prepared(
+      `SELECT repo, goal, facts, decisions, gotchas, conventions, next_steps, created_at FROM sessions
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(limit) as SessionRow[];
+    return rows.map((row) => this.toSession(row));
+  }
+
+  /** One repository's handoffs with their lists intact, newest first. */
+  sessionsForRepo(repo: string, limit = 50): SessionRecord[] {
+    const rows = this.prepared(
+      `SELECT repo, goal, facts, decisions, gotchas, conventions, next_steps, created_at FROM sessions
+       WHERE repo = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(repo, limit) as SessionRow[];
+    return rows.map((row) => this.toSession(row));
+  }
+
+  /**
+   * True per-repo totals for the memory browser, which pages through capped
+   * lists and must be able to say how much it did not show.
+   */
+  countForRepo(repo: string): { facts: number; knowledge: number; sessions: number } {
+    return this.prepared(
+      `SELECT (SELECT COUNT(*) FROM facts WHERE repo_hint = ?) AS facts,
+              (SELECT COUNT(*) FROM knowledge WHERE repo = ?) AS knowledge,
+              (SELECT COUNT(*) FROM sessions WHERE repo = ?) AS sessions`,
+    ).get(repo, repo, repo) as { facts: number; knowledge: number; sessions: number };
   }
 
   /** Recent recall runs across repos, chronological order for trend charts. */
