@@ -32,6 +32,10 @@ aegisxmemory setup
 
 **Step 3 — restart your agent.** Done. Nothing else to run — ever.
 
+See it in action (a real, unscripted run):
+
+![The aegisxmemory setup wizard — answers 2 questions and connects your agent](docs/assets/setup.gif)
+
 From now on the memory loop is automatic (the `--rules` flag makes the agent recall at session start and save at session end by itself). You just work and talk normally:
 
 > *"buatkan fitur login"* → agent works → memory updates itself → next session it remembers everything.

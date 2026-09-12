@@ -32,6 +32,10 @@ aegisxmemory setup
 
 **Langkah 3 — restart agent Anda.** Selesai. Tidak ada lagi yang perlu dijalankan — selamanya.
 
+Lihat langsung jalannya wizard (rekaman nyata, tanpa skrip):
+
+![Wizard aegisxmemory setup — jawab 2 pertanyaan, agent tersambung](docs/assets/setup.gif)
+
 Mulai sekarang loop memorinya otomatis (flag `--rules` membuat agent recall di awal sesi dan save di akhir sesi dengan sendirinya). Anda tinggal kerja dan ngobrol normal:
 
 > *"build a login feature"* → agent bekerja → memori ter-update sendiri → sesi berikutnya dia ingat semuanya.
