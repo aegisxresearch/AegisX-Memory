@@ -129,11 +129,13 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'aegisxmemory_save',
-    'Persist a session handoff: goal, verified facts, decisions with reasons, and actionable next steps. Call at session end. Each decision is also recorded as searchable knowledge (upserted by its sentence), so it stays findable in later sessions.',
+    'Persist a session handoff: goal, verified facts, decisions with reasons, gotchas to avoid, project conventions, and actionable next steps. Call at session end. Each decision, gotcha and convention is also recorded as searchable knowledge (upserted by its sentence), so it stays findable in later sessions.',
     {
       goal: z.string().describe('what this session was trying to achieve'),
       facts: z.array(z.string()).describe('verified facts (exact errors, paths, commands)'),
       decisions: z.array(z.string()).describe('decisions taken, with one-line reasons'),
+      gotchas: z.array(z.string()).optional().describe('traps that cost time — what the next session should avoid'),
+      conventions: z.array(z.string()).optional().describe('project rules the next session must follow'),
       nextSteps: z.array(z.string()).describe('actionable steps for the next session'),
     },
     async (handoff) => {

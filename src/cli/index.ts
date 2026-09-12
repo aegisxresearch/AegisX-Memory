@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Engine, DEFAULT_TOKEN_BUDGET, describeSessionSave } from '../core/engine.js';
 import { aegisxHome, dbPath, normalizeRepoPath } from '../core/paths.js';
-import { AegisxError, type SessionSaveSummary } from '../core/types.js';
+import { AegisxError, type SessionHandoffInput, type SessionSaveSummary } from '../core/types.js';
 import { binServerConfig, defaultServerConfig, parseAgentArg, renderConfig } from './mcp-config.js';
 import { SETUP_AGENTS, describeResult, describeRulesResult, installForAgent, installRulesForAgent, type SetupAgent } from './auto-setup.js';
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
@@ -74,14 +74,10 @@ function intArg(value: string): number {
   return parsed;
 }
 
-interface HandoffInput {
-  goal: string;
-  facts: string[];
-  decisions: string[];
-  nextSteps: string[];
-}
+// Kept as an alias so the CLI's JSON contract stays readable at the call site;
+// the shape itself lives in core/types.ts with the rest of the engine's types.
 
-function parseHandoffText(text: string): HandoffInput {
+function parseHandoffText(text: string): SessionHandoffInput {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -93,8 +89,15 @@ function parseHandoffText(text: string): HandoffInput {
     goal: requireString(obj['goal'], 'goal'),
     facts: requireStringArray(obj['facts'], 'facts'),
     decisions: requireStringArray(obj['decisions'], 'decisions'),
+    // Optional: handoffs written before these lists existed must keep parsing.
+    gotchas: optionalStringArray(obj['gotchas'], 'gotchas'),
+    conventions: optionalStringArray(obj['conventions'], 'conventions'),
     nextSteps: requireStringArray(obj['nextSteps'], 'nextSteps'),
   };
+}
+
+function optionalStringArray(value: unknown, name: string): string[] {
+  return value === undefined || value === null ? [] : requireStringArray(value, name);
 }
 
 function requireString(value: unknown, name: string): string {
@@ -315,9 +318,9 @@ program
           ok: true,
           saved: 'session handoff',
           repo: normalizeRepoPath(process.cwd()),
-          decisions: {
-            recorded: summary.decisionsRecorded,
-            alreadyKnown: summary.decisionsAlreadyKnown,
+          knowledge: {
+            recorded: summary.notesRecorded,
+            alreadyKnown: summary.notesAlreadyKnown,
           },
         },
         jsonOut,

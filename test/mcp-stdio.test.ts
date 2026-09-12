@@ -147,4 +147,57 @@ suite('mcp stdio — allowlist denial over the wire', () => {
       '- [project.a.dev-port] 5000 — was: 3000 (changed ',
     );
   });
+
+  it('backward compatible: a handoff with only the original four fields still saves', async () => {
+    client = await connectServer();
+    // The shape every agent knew before gotchas/conventions existed. If the new
+    // fields were required, this call would start failing on upgrade.
+    const saved = (await client.callTool({
+      name: 'aegisxmemory_save',
+      arguments: {
+        goal: 'old-shaped handoff',
+        facts: [],
+        decisions: ['pin the dev server to port 5000'],
+        nextSteps: [],
+      },
+    })) as ToolResult;
+    expect(saved.isError).toBeUndefined();
+    expect(saved.content[0]?.text).toContain('session handoff saved');
+    expect(saved.content[0]?.text).toContain('1 note recorded');
+
+    const recall = (await client.callTool({
+      name: 'aegisxmemory_recall',
+      arguments: { repo: repoA },
+    })) as ToolResult;
+    expect(recall.content[0]?.text).toContain('## Decisions, gotchas & conventions');
+    expect(recall.content[0]?.text).toContain('- (decision) pin the dev server to port 5000');
+  });
+
+  it('happy: gotchas and conventions travel through the tool schema as their own kinds', async () => {
+    client = await connectServer();
+    const saved = (await client.callTool({
+      name: 'aegisxmemory_save',
+      arguments: {
+        goal: 'notes with kinds',
+        facts: [],
+        decisions: [],
+        gotchas: ['sqlite locking needs a busy timeout'],
+        conventions: ['four spaces in TypeScript'],
+        nextSteps: [],
+      },
+    })) as ToolResult;
+    expect(saved.isError).toBeUndefined();
+    expect(saved.content[0]?.text).toContain('2 notes recorded');
+
+    const recall = (await client.callTool({
+      name: 'aegisxmemory_recall',
+      arguments: { repo: repoA },
+    })) as ToolResult;
+    const text = recall.content[0]?.text ?? '';
+    expect(text).toContain('- (gotcha) sqlite locking needs a busy timeout');
+    expect(text).toContain('- (convention) four spaces in TypeScript');
+    // and the last handoff prints them under their own headings
+    expect(text).toContain('Gotchas:\n- sqlite locking needs a busy timeout');
+    expect(text).toContain('Conventions:\n- four spaces in TypeScript');
+  });
 });

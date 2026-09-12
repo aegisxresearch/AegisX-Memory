@@ -96,7 +96,7 @@ describe('knowledge — upsert identity (repo, kind, title)', () => {
   });
 });
 
-describe('knowledge — the save path records handoff decisions', () => {
+describe('knowledge — the save path records handoff notes', () => {
   const handoff = (goal: string, decisions: string[]) => ({ goal, facts: [], decisions, nextSteps: [] });
 
   it('records each decision as a decision entry owned by that repo', () => {
@@ -107,7 +107,7 @@ describe('knowledge — the save path records handoff decisions', () => {
         'keep the session in a signed cookie, not the database',
       ]));
 
-      expect(summary).toEqual({ decisionsRecorded: 2, decisionsAlreadyKnown: 0 });
+      expect(summary).toEqual({ notesRecorded: 2, notesAlreadyKnown: 0 });
       const rows = store.knowledgeForRepo(normalizeRepoPath(repo));
       expect(rows.map((k) => k.kind)).toEqual(['decision', 'decision']);
       expect(rows.map((k) => k.title).sort()).toEqual([
@@ -128,7 +128,7 @@ describe('knowledge — the save path records handoff decisions', () => {
       const second = engine.saveSession(repo, handoff('second pass', ['pick sqlite over postgres']));
 
       // nothing new was learned, but the store still holds exactly one copy
-      expect(second).toEqual({ decisionsRecorded: 0, decisionsAlreadyKnown: 1 });
+      expect(second).toEqual({ notesRecorded: 0, notesAlreadyKnown: 1 });
       expect(store.countKnowledge()).toBe(1);
     } finally {
       engine.close();
@@ -142,8 +142,8 @@ describe('knowledge — the save path records handoff decisions', () => {
       const first = engine.saveSession(repo, same);
       const again = engine.saveSession(repo, same);
 
-      expect(first).toEqual({ decisionsRecorded: 1, decisionsAlreadyKnown: 0 });
-      expect(again).toEqual({ decisionsRecorded: 0, decisionsAlreadyKnown: 1 });
+      expect(first).toEqual({ notesRecorded: 1, notesAlreadyKnown: 0 });
+      expect(again).toEqual({ notesRecorded: 0, notesAlreadyKnown: 1 });
       expect(store.countKnowledge()).toBe(1);
     } finally {
       engine.close();
@@ -154,7 +154,7 @@ describe('knowledge — the save path records handoff decisions', () => {
     const engine = new Engine(dbFile);
     try {
       const summary = engine.saveSession(repo, handoff('de-dupe', ['pin node 22', 'pin node 22']));
-      expect(summary).toEqual({ decisionsRecorded: 1, decisionsAlreadyKnown: 1 });
+      expect(summary).toEqual({ notesRecorded: 1, notesAlreadyKnown: 1 });
       expect(store.countKnowledge()).toBe(1);
     } finally {
       engine.close();
@@ -165,7 +165,7 @@ describe('knowledge — the save path records handoff decisions', () => {
     const engine = new Engine(dbFile);
     try {
       const summary = engine.saveSession(repo, handoff('just looking around', []));
-      expect(summary).toEqual({ decisionsRecorded: 0, decisionsAlreadyKnown: 0 });
+      expect(summary).toEqual({ notesRecorded: 0, notesAlreadyKnown: 0 });
       expect(store.countKnowledge()).toBe(0);
     } finally {
       engine.close();
@@ -222,7 +222,7 @@ describe('knowledge — the save path records handoff decisions', () => {
       engine.saveSession(repo, handoff('ci', [sentence]));
       const markdown = engine.renderMarkdown(engine.recall('ci runner', repo));
 
-      expect(markdown).toContain('## Decisions & gotchas');
+      expect(markdown).toContain('## Decisions, gotchas & conventions');
       expect(markdown).toContain(`- (decision) ${sentence}`);
       // the title/body form would print the same sentence twice within the line
       expect(markdown).not.toContain('- (decision) **');
@@ -234,8 +234,13 @@ describe('knowledge — the save path records handoff decisions', () => {
 
 /** A database holding handoffs written before knowledge had a producer: the
  *  sessions table only, and no `meta` marker to say the backfill already ran. */
-function writeLegacyHandoffs(file: string, rows: Array<{ repo: string; decisions: string }>): void {
+function writeLegacyHandoffs(
+  file: string,
+  rows: Array<{ repo: string; decisions: string; gotchas?: string; conventions?: string }>,
+  options: { noteColumns?: boolean; marker?: string } = {},
+): void {
   const raw = new DatabaseConstructor(file);
+  const noteColumns = options.noteColumns === true;
   raw.exec(`
     CREATE TABLE sessions (
       id INTEGER PRIMARY KEY,
@@ -243,23 +248,29 @@ function writeLegacyHandoffs(file: string, rows: Array<{ repo: string; decisions
       goal TEXT NOT NULL,
       facts TEXT NOT NULL,
       decisions TEXT NOT NULL,
+      ${noteColumns ? "gotchas TEXT NOT NULL DEFAULT '[]', conventions TEXT NOT NULL DEFAULT '[]'," : ''}
       next_steps TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
   `);
   const insert = raw.prepare(
-    'INSERT INTO sessions (repo, goal, facts, decisions, next_steps, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    noteColumns
+      ? 'INSERT INTO sessions (repo, goal, facts, decisions, gotchas, conventions, next_steps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      : 'INSERT INTO sessions (repo, goal, facts, decisions, next_steps, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   );
   rows.forEach((row, index) => {
-    insert.run(
-      row.repo,
-      `session ${index}`,
-      '[]',
-      row.decisions,
-      '[]',
-      `2026-01-0${index + 1}T00:00:00.000Z`,
-    );
+    const goal = `session ${index}`;
+    const createdAt = `2026-01-0${index + 1}T00:00:00.000Z`;
+    if (noteColumns) {
+      insert.run(row.repo, goal, '[]', row.decisions, row.gotchas ?? '[]', row.conventions ?? '[]', '[]', createdAt);
+    } else {
+      insert.run(row.repo, goal, '[]', row.decisions, '[]', createdAt);
+    }
   });
+  if (options.marker !== undefined) {
+    raw.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    raw.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('knowledge-backfill', options.marker);
+  }
   raw.close();
 }
 
@@ -343,6 +354,143 @@ describe('knowledge — one-time backfill of handoffs written before knowledge h
       expect(migrated.knowledgeForRepo(other).map((k) => k.title)).toEqual(['beta decision']);
     } finally {
       migrated.close();
+    }
+  });
+
+  it('adds the newer handoff columns to a database that predates them', () => {
+    const legacy = path.join(workspace, 'legacy-columns.sqlite');
+    writeLegacyHandoffs(legacy, [{ repo, decisions: JSON.stringify(['pick sqlite over postgres']) }]);
+
+    const migrated = new Store(legacy);
+    try {
+      // both reads would throw "no such column" without the ALTER
+      expect(migrated.lastSession(repo)?.gotchas).toEqual([]);
+      expect(migrated.recentSessions()[0]?.conventions).toBe(0);
+      expect(migrated.knowledgeForRepo(repo).map((k) => k.title)).toEqual(['pick sqlite over postgres']);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it('re-scans when the marker came from an older backfill version', () => {
+    const legacy = path.join(workspace, 'legacy-old-marker.sqlite');
+    writeLegacyHandoffs(
+      legacy,
+      [
+        {
+          repo,
+          decisions: JSON.stringify(['pick sqlite over postgres']),
+          gotchas: JSON.stringify(['WAL needs a busy timeout']),
+          conventions: JSON.stringify(['four spaces in TS']),
+        },
+      ],
+      {
+        noteColumns: true,
+        // what the previous backfill wrote: decisions only, and no `version`
+        marker: JSON.stringify({ sessions: 1, recorded: 1, alreadyKnown: 0, skippedSecrets: 0, at: '2026-09-12T00:00:00.000Z' }),
+      },
+    );
+    const seed = new DatabaseConstructor(legacy);
+    seed.exec(`CREATE TABLE knowledge (
+      id INTEGER PRIMARY KEY, repo TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
+      body TEXT NOT NULL, anchors TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
+    )`);
+    seed
+      .prepare('INSERT INTO knowledge (repo, kind, title, body, anchors, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(repo, 'decision', 'pick sqlite over postgres', 'pick sqlite over postgres', '[]', '2026-09-12T00:00:00.000Z');
+    seed.close();
+
+    const migrated = new Store(legacy);
+    try {
+      expect(migrated.knowledgeForRepo(repo).map((k) => k.kind).sort()).toEqual([
+        'convention',
+        'decision',
+        'gotcha',
+      ]);
+      // the decision was already there; only the two newer lists are new
+      expect(JSON.parse(migrated.getMeta(KNOWLEDGE_BACKFILL_META) ?? '{}')).toMatchObject({
+        version: 2,
+        recorded: 2,
+        alreadyKnown: 1,
+      });
+    } finally {
+      migrated.close();
+    }
+  });
+});
+
+describe('knowledge — gotchas and conventions are their own kinds', () => {
+  const notes = (goal: string, extra: { gotchas?: string[]; conventions?: string[] }) => ({
+    goal,
+    facts: [],
+    decisions: [],
+    nextSteps: [],
+    ...extra,
+  });
+
+  it('records each note list under its own kind', () => {
+    const engine = new Engine(dbFile);
+    try {
+      const summary = engine.saveSession(repo, {
+        goal: 'harden auth',
+        facts: [],
+        decisions: ['use scrypt for new password hashes'],
+        gotchas: ['sqlite locking bites without a busy timeout', 'scrypt is slow on the CI runner'],
+        conventions: ['two-space indent in Python, four in TypeScript'],
+        nextSteps: [],
+      });
+      expect(summary).toEqual({ notesRecorded: 4, notesAlreadyKnown: 0 });
+      expect(store.knowledgeForRepo(normalizeRepoPath(repo)).map((k) => k.kind).sort()).toEqual([
+        'convention',
+        'decision',
+        'gotcha',
+        'gotcha',
+      ]);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('round-trips them through the handoff so resume shows them', () => {
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, notes('g', { gotchas: ['watch the port clash'], conventions: ['run the linter'] }));
+      const session = engine.recall(null, repo).lastSession;
+      expect(session?.gotchas).toEqual(['watch the port clash']);
+      expect(session?.conventions).toEqual(['run the linter']);
+
+      const markdown = engine.renderMarkdown(engine.recall(null, repo));
+      expect(markdown).toContain('Gotchas:\n- watch the port clash');
+      expect(markdown).toContain('Conventions:\n- run the linter');
+      expect(markdown).toContain('## Decisions, gotchas & conventions');
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('still accepts a handoff that only knows the original four fields', () => {
+    const engine = new Engine(dbFile);
+    try {
+      const summary = engine.saveSession(repo, { goal: 'g', facts: ['f'], decisions: ['d'], nextSteps: ['n'] });
+      expect(summary).toEqual({ notesRecorded: 1, notesAlreadyKnown: 0 });
+      const session = engine.recall(null, repo).lastSession;
+      expect(session?.gotchas).toEqual([]);
+      expect(session?.conventions).toEqual([]);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('refuses a secret in a gotcha exactly like one in a decision', () => {
+    const engine = new Engine(dbFile);
+    try {
+      expect(() =>
+        engine.saveSession(repo, notes('leak', { gotchas: ['the key is sk-abcdefghij0123456789abcdefghij'] })),
+      ).toThrow(AegisxError);
+      expect(store.countKnowledge()).toBe(0);
+      expect(store.countSessions()).toBe(0);
+    } finally {
+      engine.close();
     }
   });
 });

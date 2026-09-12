@@ -516,7 +516,7 @@ const APP_JS = `'use strict';
       host.appendChild(heroCard(saved, recalls));
       host.appendChild(statCard('Repos', (d.repos || []).length, 'with memory or telemetry'));
       host.appendChild(statCard('Facts', d.totals.facts, changed ? changed + ' of ' + d.totals.facts + ' changed since first pinned' : 'pinned stable facts'));
-      host.appendChild(statCard('Knowledge', d.totals.knowledge, 'decisions · gotchas · lessons'));
+      host.appendChild(statCard('Knowledge', d.totals.knowledge, 'decisions · gotchas · conventions'));
       host.appendChild(statCard('Sessions', d.totals.sessions, 'handoffs stored'));
       host.appendChild(rateCard(rate, hits, recalls.length));
     });
@@ -972,7 +972,7 @@ const APP_JS = `'use strict';
       var s = sessions[i], li = el('li');
       li.appendChild(el('span', 'repo', s.repo));
       li.appendChild(el('span', 'val', s.goal));
-      li.appendChild(el('span', 'hint', s.facts + ' facts · ' + s.decisions + ' decisions · ' + s.nextSteps + ' next · ' + String(s.createdAt || '').slice(0, 16).replace('T', ' ')));
+      li.appendChild(el('span', 'hint', s.facts + ' facts · ' + s.decisions + ' decisions · ' + s.gotchas + ' gotchas · ' + s.conventions + ' conventions · ' + s.nextSteps + ' next · ' + String(s.createdAt || '').slice(0, 16).replace('T', ' ')));
       list.appendChild(li);
     }
     return list;

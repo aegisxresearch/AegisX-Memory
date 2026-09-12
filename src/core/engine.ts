@@ -12,7 +12,7 @@ import { normalizeRepoPath, parseAllowedRepos, assertRepoAllowed } from './paths
 import { Store, ftsEscape, KNOWLEDGE_BACKFILL_META } from './store.js';
 import { Indexer, isSecretBearingFile } from '../indexer/indexer.js';
 import { containsSecret } from './secrets.js';
-import { AegisxError, type FactHistoryEntry, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats, type SessionSaveSummary } from './types.js';
+import { AegisxError, type FactHistoryEntry, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats, type SessionHandoff, type SessionHandoffInput, type SessionSaveSummary } from './types.js';
 
 export const DEFAULT_TOKEN_BUDGET = 2_000;
 const CHARS_PER_TOKEN = 4; // rough estimator, deliberately conservative
@@ -100,18 +100,22 @@ export class Engine {
     return this.store.recentFactHistory(limit);
   }
 
-  saveSession(
-    repoAbsPath: string,
-    handoff: { goal: string; facts: string[]; decisions: string[]; nextSteps: string[] },
-  ): SessionSaveSummary {
+  saveSession(repoAbsPath: string, input: SessionHandoffInput): SessionSaveSummary {
     const repo = normalizeRepoPath(repoAbsPath);
     this.guardRepo(repo);
+    // `gotchas`/`conventions` are optional at the caller edge: normalize once so
+    // the scan, the stored row, and the knowledge notes all see the same lists.
+    const handoff: SessionHandoff = {
+      ...input,
+      gotchas: input.gotchas ?? [],
+      conventions: input.conventions ?? [],
+    };
     // Secret hygiene (RFC §5, STRIDE:I): the handoff is stored verbatim and
     // recalled into future sessions, so every string is scanned before persisting.
     if (containsSecret(handoff.goal)) {
       throw new AegisxError('user', 'session goal looks like a secret/credential; refusing to store (secret hygiene)');
     }
-    for (const listName of ['facts', 'decisions', 'nextSteps'] as const) {
+    for (const listName of ['facts', 'decisions', 'gotchas', 'conventions', 'nextSteps'] as const) {
       for (const item of handoff[listName]) {
         if (containsSecret(item)) {
           throw new AegisxError(
@@ -122,14 +126,17 @@ export class Engine {
       }
     }
     this.store.saveSession(repo, handoff);
-    // The handoff's `decisions` are the only place a decision is ever captured,
-    // and nothing wrote the knowledge store at all before this — so recall's
-    // "Decisions & gotchas" block and the dashboard graph were always empty.
-    // Each decision is upserted by its sentence, so a decision taken once stays
-    // findable in later sessions instead of living only inside the one handoff
-    // it was written in, and a decision repeated across sessions is refreshed
-    // rather than forked.
-    return this.store.recordHandoffNotes(repo, handoff.decisions);
+    // Decisions, gotchas and conventions are the only places those notes are
+    // ever captured, and nothing wrote the knowledge store at all before this —
+    // so recall's notes block and the dashboard graph were always empty. Each
+    // note is upserted by its sentence: one taken once stays findable in later
+    // sessions instead of living only inside the handoff it was written in, and
+    // one repeated across sessions is refreshed rather than forked.
+    return this.store.recordHandoffNotes(repo, {
+      decisions: handoff.decisions,
+      gotchas: handoff.gotchas,
+      conventions: handoff.conventions,
+    });
   }
 
   /** Record of the one-time backfill of pre-v1.13 handoff decisions, if it has
@@ -167,7 +174,10 @@ export class Engine {
   dashboardData(): {
     repos: Array<{ repo: string; files: number; symbols: number; scans: number; recalls: number; hitRate: number | null; tokensSavedEstimate: number | null }>;
     facts: MemoryFact[];
-    sessions: Array<{ repo: string; goal: string; facts: number; decisions: number; nextSteps: number; createdAt: string }>;
+    sessions: Array<{
+      repo: string; goal: string; facts: number; decisions: number; gotchas: number;
+      conventions: number; nextSteps: number; createdAt: string;
+    }>;
     recalls: Array<{ repo: string; query: string | null; tokenEstimate: number; hit: boolean; createdAt: string }>;
     totals: { facts: number; knowledge: number; sessions: number };
   } {
@@ -243,7 +253,12 @@ export class Engine {
     });
     this.store.recentSessions(10).forEach((s, i) => {
       const sid = `session:${i}`;
-      nodes.push({ id: sid, kind: 'session', label: s.goal, sub: `${s.facts} facts · ${s.decisions} decisions` });
+      nodes.push({
+        id: sid,
+        kind: 'session',
+        label: s.goal,
+        sub: `${s.facts} facts · ${s.decisions} decisions · ${s.gotchas} gotchas · ${s.conventions} conventions`,
+      });
       const rid = ensureRepo(s.repo);
       edges.push({ source: sid, target: rid, label: 'summarizes' });
     });
@@ -432,7 +447,7 @@ export class Engine {
       }
     }
     if (result.knowledge.length > 0) {
-      parts.push('## Decisions & gotchas');
+      parts.push('## Decisions, gotchas & conventions');
       for (const k of result.knowledge) {
         parts.push(knowledgeLine(k));
       }
@@ -446,6 +461,12 @@ export class Engine {
       if (result.lastSession.decisions.length > 0) {
         parts.push('Decisions:\n' + result.lastSession.decisions.map((x) => `- ${x}`).join('\n'));
       }
+      if (result.lastSession.gotchas.length > 0) {
+        parts.push('Gotchas:\n' + result.lastSession.gotchas.map((x) => `- ${x}`).join('\n'));
+      }
+      if (result.lastSession.conventions.length > 0) {
+        parts.push('Conventions:\n' + result.lastSession.conventions.map((x) => `- ${x}`).join('\n'));
+      }
       if (result.lastSession.nextSteps.length > 0) {
         parts.push('Next steps:\n' + result.lastSession.nextSteps.map((x) => `- ${x}`).join('\n'));
       }
@@ -456,15 +477,15 @@ export class Engine {
   }
 }
 
-/** Human-readable suffix for a save, e.g. " — 2 decisions recorded". Empty when
- *  the handoff carried no decisions worth reporting. */
+/** Human-readable suffix for a save, e.g. " — 3 notes recorded". Empty when the
+ *  handoff carried no decisions, gotchas or conventions worth reporting. */
 export function describeSessionSave(summary: SessionSaveSummary): string {
   const parts: string[] = [];
-  if (summary.decisionsRecorded > 0) {
-    parts.push(`${summary.decisionsRecorded} decision${summary.decisionsRecorded === 1 ? '' : 's'} recorded`);
+  if (summary.notesRecorded > 0) {
+    parts.push(`${summary.notesRecorded} note${summary.notesRecorded === 1 ? '' : 's'} recorded`);
   }
-  if (summary.decisionsAlreadyKnown > 0) {
-    parts.push(`${summary.decisionsAlreadyKnown} already known`);
+  if (summary.notesAlreadyKnown > 0) {
+    parts.push(`${summary.notesAlreadyKnown} already known`);
   }
   return parts.length === 0 ? '' : ` — ${parts.join(', ')}`;
 }
@@ -496,7 +517,7 @@ function estimateTokens(
   for (const s of symbols) chars += s.filePath.length + (s.name?.length ?? 0) + 20;
   if (session !== undefined) {
     chars += session.goal.length;
-    for (const list of [session.facts, session.decisions, session.nextSteps]) {
+    for (const list of [session.facts, session.decisions, session.gotchas, session.conventions, session.nextSteps]) {
       for (const item of list) chars += item.length;
     }
   }

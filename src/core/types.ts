@@ -73,18 +73,40 @@ export interface KnowledgeRecord {
 /** What a `saveSession` call wrote to the knowledge store, so a caller can
  *  tell the agent whether it taught the memory anything new. */
 export interface SessionSaveSummary {
-  /** New knowledge entries created. */
-  decisionsRecorded: number;
-  /** Decisions whose sentence was already stored (upserted onto, not forked). */
-  decisionsAlreadyKnown: number;
+  /** New knowledge entries created (decisions + gotchas + conventions). */
+  notesRecorded: number;
+  /** Notes whose sentence was already stored (upserted onto, not forked). */
+  notesAlreadyKnown: number;
 }
 
 export interface SessionHandoff {
   goal: string;
   facts: string[];
   decisions: string[];
+  gotchas: string[];
+  conventions: string[];
   nextSteps: string[];
   createdAt?: string;
+}
+
+/** A handoff as a *caller* may supply it. `gotchas` and `conventions` arrived
+ *  after the original four fields, so they stay optional here and default to
+ *  empty: an agent (or a script) that only knows the old shape keeps working. */
+export interface SessionHandoffInput {
+  goal: string;
+  facts: string[];
+  decisions: string[];
+  gotchas?: string[];
+  conventions?: string[];
+  nextSteps: string[];
+}
+
+/** The lists a handoff contributes to the knowledge store, after the optional
+ *  caller-facing fields have been normalized. */
+export interface HandoffNotes {
+  decisions: string[];
+  gotchas: string[];
+  conventions: string[];
 }
 
 export interface ScanStats {

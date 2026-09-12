@@ -14,6 +14,7 @@ import {
   type MemoryFact,
   type SessionHandoff,
   type SessionSaveSummary,
+  type HandoffNotes,
 } from './types.js';
 import { buildFtsQuery } from './fts.js';
 import { secureDbFile } from './db-perms.js';
@@ -33,8 +34,23 @@ export const FACT_HISTORY_MAX = 10;
 /** Telemetry retention window (ISO timestamps compare lexicographically). */
 export const TELEMETRY_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
-/** `meta` key recording the one-time backfill of pre-v1.13 handoff decisions. */
+/** `meta` key recording the one-time backfill of pre-v1.13 handoff notes. */
 export const KNOWLEDGE_BACKFILL_META = 'knowledge-backfill';
+/**
+ * Bump when the backfill learns to fold more than it did before. The marker
+ * records the version that ran, so a newer backfill re-scans (idempotently)
+ * instead of being skipped by a marker written by the previous one — which is
+ * how handoffs saved between v1.13 and gotcha support still contribute theirs.
+ */
+const KNOWLEDGE_BACKFILL_VERSION = 2;
+/** Each handoff note list, and the knowledge kind it becomes. */
+const NOTE_KINDS: ReadonlyArray<readonly [keyof HandoffNotes, KnowledgeKind]> = [
+  ['decisions', 'decision'],
+  ['gotchas', 'gotcha'],
+  ['conventions', 'convention'],
+];
+/** The same lists as bare keys, for scans that do not care about the kind. */
+const NOTE_KEYS = ['decisions', 'gotchas', 'conventions'] as const;
 
 /**
  * Derive a knowledge title from a free-form sentence (a handoff decision line),
@@ -145,6 +161,8 @@ export class Store {
         goal TEXT NOT NULL,
         facts TEXT NOT NULL,
         decisions TEXT NOT NULL,
+        gotchas TEXT NOT NULL DEFAULT '[]',
+        conventions TEXT NOT NULL DEFAULT '[]',
         next_steps TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
@@ -215,6 +233,17 @@ export class Store {
       `);
     }
     this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_identity ON knowledge(repo, kind, title);`);
+    // Sessions gained `gotchas` and `conventions` after the first release, so a
+    // database created before them needs the columns added in place. ADD COLUMN
+    // keeps existing ids and rows; the default backfills old rows with `[]`.
+    const sessionColumns = new Set(
+      (this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    for (const column of ['gotchas', 'conventions'] as const) {
+      if (!sessionColumns.has(column)) {
+        this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT NOT NULL DEFAULT '[]';`);
+      }
+    }
     this.backfillKnowledgeFromHandoffs();
   }
 
@@ -230,35 +259,44 @@ export class Store {
    * scan to once per database.
    */
   private backfillKnowledgeFromHandoffs(): void {
-    if (this.getMeta(KNOWLEDGE_BACKFILL_META) !== undefined) {
+    const raw = this.getMeta(KNOWLEDGE_BACKFILL_META);
+    if (raw !== undefined && readBackfillVersion(raw) >= KNOWLEDGE_BACKFILL_VERSION) {
       return;
     }
-    const rows = this.prepared('SELECT repo, decisions FROM sessions ORDER BY id').all() as Array<{
-      repo: string;
-      decisions: string;
-    }>;
+    const rows = this.prepared(
+      'SELECT repo, decisions, gotchas, conventions FROM sessions ORDER BY id',
+    ).all() as Array<{ repo: string; decisions: string; gotchas: string; conventions: string }>;
     let recorded = 0;
     let alreadyKnown = 0;
     let skippedSecrets = 0;
     for (const row of rows) {
-      const notes: string[] = [];
-      for (const note of parseStringArray(row.decisions)) {
-        // Rows written before the storage-time secret scan existed (RFC v1.2)
-        // can still hold a credential; copying one into a new table would
-        // re-publish exactly what that scan was added to keep out.
-        if (containsSecret(note)) {
-          skippedSecrets += 1;
-          continue;
+      const notes: HandoffNotes = { decisions: [], gotchas: [], conventions: [] };
+      for (const key of NOTE_KEYS) {
+        for (const note of parseStringArray(row[key])) {
+          // Rows written before the storage-time secret scan existed (RFC v1.2)
+          // can still hold a credential; copying one into a new table would
+          // re-publish exactly what that scan was added to keep out.
+          if (containsSecret(note)) {
+            skippedSecrets += 1;
+            continue;
+          }
+          notes[key].push(note);
         }
-        notes.push(note);
       }
       const summary = this.recordHandoffNotes(row.repo, notes);
-      recorded += summary.decisionsRecorded;
-      alreadyKnown += summary.decisionsAlreadyKnown;
+      recorded += summary.notesRecorded;
+      alreadyKnown += summary.notesAlreadyKnown;
     }
     this.setMeta(
       KNOWLEDGE_BACKFILL_META,
-      JSON.stringify({ sessions: rows.length, recorded, alreadyKnown, skippedSecrets, at: new Date().toISOString() }),
+      JSON.stringify({
+        version: KNOWLEDGE_BACKFILL_VERSION,
+        sessions: rows.length,
+        recorded,
+        alreadyKnown,
+        skippedSecrets,
+        at: new Date().toISOString(),
+      }),
     );
   }
 
@@ -487,17 +525,22 @@ export class Store {
   }
 
   /**
-   * Record handoff notes (the handoff's `decisions`) as knowledge, upserted by
-   * their sentence. The single implementation behind a live `save` and the
-   * one-time backfill of handoffs written before knowledge had a producer.
+   * Record a handoff's notes as knowledge, upserted by their sentence: decisions
+   * as `decision`, gotchas as `gotcha`, conventions as `convention`. The single
+   * implementation behind a live `save` and the one-time backfill of handoffs
+   * written before knowledge had a producer.
    */
-  recordHandoffNotes(repo: string, notes: readonly string[]): SessionSaveSummary {
+  recordHandoffNotes(repo: string, notes: HandoffNotes): SessionSaveSummary {
     const before = this.countKnowledge();
-    for (const note of notes) {
-      this.saveKnowledge(repo, 'decision', knowledgeTitle(note), note, []);
+    let total = 0;
+    for (const [key, kind] of NOTE_KINDS) {
+      for (const note of notes[key]) {
+        total += 1;
+        this.saveKnowledge(repo, kind, knowledgeTitle(note), note, []);
+      }
     }
     const recorded = this.countKnowledge() - before;
-    return { decisionsRecorded: recorded, decisionsAlreadyKnown: notes.length - recorded };
+    return { notesRecorded: recorded, notesAlreadyKnown: total - recorded };
   }
 
   knowledgeForRepo(repo: string, limit = 20): KnowledgeRecord[] {
@@ -551,12 +594,15 @@ export class Store {
   saveSession(repo: string, handoff: SessionHandoff): void {
     assertHandoff(handoff);
     this.prepared(
-      `INSERT INTO sessions (repo, goal, facts, decisions, next_steps, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sessions (repo, goal, facts, decisions, gotchas, conventions, next_steps, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       repo,
       handoff.goal,
       JSON.stringify(handoff.facts),
       JSON.stringify(handoff.decisions),
+      JSON.stringify(handoff.gotchas),
+      JSON.stringify(handoff.conventions),
       JSON.stringify(handoff.nextSteps),
       new Date().toISOString(),
     );
@@ -564,10 +610,11 @@ export class Store {
 
   lastSession(repo: string): SessionHandoff | undefined {
     const row = this.prepared(
-      `SELECT goal, facts, decisions, next_steps, created_at FROM sessions
+      `SELECT goal, facts, decisions, gotchas, conventions, next_steps, created_at FROM sessions
        WHERE repo = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
     ).get(repo) as {
-      goal: string; facts: string; decisions: string; next_steps: string; created_at: string;
+      goal: string; facts: string; decisions: string; gotchas: string; conventions: string;
+      next_steps: string; created_at: string;
     } | undefined;
     if (row === undefined) {
       return undefined;
@@ -576,6 +623,8 @@ export class Store {
       goal: row.goal,
       facts: JSON.parse(row.facts) as string[],
       decisions: JSON.parse(row.decisions) as string[],
+      gotchas: JSON.parse(row.gotchas) as string[],
+      conventions: JSON.parse(row.conventions) as string[],
       nextSteps: JSON.parse(row.next_steps) as string[],
       createdAt: row.created_at,
     };
@@ -797,16 +846,24 @@ export class Store {
   }
 
   /** Recent handoffs across repos with item counts (no full bodies needed). */
-  recentSessions(limit = 20): Array<{ repo: string; goal: string; facts: number; decisions: number; nextSteps: number; createdAt: string }> {
+  recentSessions(limit = 20): Array<{
+    repo: string; goal: string; facts: number; decisions: number; gotchas: number;
+    conventions: number; nextSteps: number; createdAt: string;
+  }> {
     const rows = this.prepared(
-      `SELECT repo, goal, facts, decisions, next_steps, created_at FROM sessions
+      `SELECT repo, goal, facts, decisions, gotchas, conventions, next_steps, created_at FROM sessions
        ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(limit) as Array<{ repo: string; goal: string; facts: string; decisions: string; next_steps: string; created_at: string }>;
+    ).all(limit) as Array<{
+      repo: string; goal: string; facts: string; decisions: string; gotchas: string;
+      conventions: string; next_steps: string; created_at: string;
+    }>;
     return rows.map((row) => ({
       repo: row.repo,
       goal: row.goal,
       facts: (JSON.parse(row.facts) as string[]).length,
       decisions: (JSON.parse(row.decisions) as string[]).length,
+      gotchas: (JSON.parse(row.gotchas) as string[]).length,
+      conventions: (JSON.parse(row.conventions) as string[]).length,
       nextSteps: (JSON.parse(row.next_steps) as string[]).length,
       createdAt: row.created_at,
     }));
@@ -841,6 +898,17 @@ export class Store {
 /** Back-compat alias: free-text → safe FTS5 query. */
 export const ftsEscape = buildFtsQuery;
 
+/** The backfill version a `meta` record describes; unparseable or absent counts
+ *  as 0, i.e. "older than any version this code knows", so it re-scans. */
+function readBackfillVersion(raw: string): number {
+  try {
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === 'number' ? parsed.version : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** Parse a JSON string list out of a `sessions` column. Legacy rows can hold
  *  anything, and one mangled value must not abort a migration. */
 function parseStringArray(raw: string): string[] {
@@ -859,7 +927,7 @@ function assertHandoff(handoff: SessionHandoff): void {
   if (handoff.goal.length > HANDOFF_STRING_MAX) {
     throw new AegisxError('user', `session goal too long (${handoff.goal.length} > ${HANDOFF_STRING_MAX})`);
   }
-  for (const listName of ['facts', 'decisions', 'nextSteps'] as const) {
+  for (const listName of ['facts', 'decisions', 'gotchas', 'conventions', 'nextSteps'] as const) {
     const list = handoff[listName];
     if (!Array.isArray(list)) {
       throw new AegisxError('user', `session ${listName} must be an array`);

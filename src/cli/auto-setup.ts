@@ -204,8 +204,8 @@ export function memoryRulesBlock(): string {
     '',
     '- At the START of every working session, call the aegisx-memory `recall` tool for the current repo before anything else. Use its context block instead of re-reading code it already covers.',
     '- When you learn a stable project fact (test command, stack, ports, build steps, conventions), persist it immediately with the aegisx-memory `remember` tool under a dot-namespaced key like `project.<name>.<key>`.',
-    '- When you discover a decision, gotcha, convention, or lesson worth keeping, put it in the `save` handoff\'s `decisions` list — each entry is stored as a searchable knowledge entry — so it does not live only in this chat.',
-    '- At the END of every session (or after a meaningful change), call the aegisx-memory `save` tool with a JSON handoff (goal, facts, decisions, nextSteps) so the next session resumes warm.',
+    '- When you discover a decision, gotcha, convention, or lesson worth keeping, put it in the matching `save` handoff list (`decisions`, `gotchas`, `conventions`) — each entry is stored as a searchable knowledge entry — so it does not live only in this chat.',
+    '- At the END of every session (or after a meaningful change), call the aegisx-memory `save` tool with a JSON handoff (goal, facts, decisions, gotchas, conventions, nextSteps) so the next session resumes warm.',
     '- Never store secrets (API keys, passwords, tokens, URLs with credentials) — the engine refuses them; do not try to work around that.',
     RULES_END,
   ].join('\n');
