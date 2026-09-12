@@ -308,6 +308,10 @@ export class Engine {
     if (repo !== null) {
       this.guardRepo(repo);
     }
+    // The store/indexer helpers take *free text* and escape it themselves, so
+    // this escape is only the "is there anything searchable here?" gate. Passing
+    // the escaped form down as well re-escaped it (each term became synonyms of
+    // its synonyms) and could even produce an FTS5 syntax error.
     const effectiveQuery = query ?? repo ?? '';
     const ftsQuery = ftsEscape(effectiveQuery);
     if (ftsQuery === null && query !== null) {
@@ -319,7 +323,7 @@ export class Engine {
       ? this.store.factsForRepo(repo, 15)
       : [];
     if (ftsQuery !== null) {
-      for (const f of this.store.searchFacts(ftsQuery, 10)) {
+      for (const f of this.store.searchFacts(effectiveQuery, 10)) {
         if (!facts.some((existing) => existing.key === f.key)) {
           facts.push(f);
         }
@@ -331,13 +335,13 @@ export class Engine {
     //    global recall cannot leak other projects' knowledge.
     const knowledge = ftsQuery === null
       ? (repo !== null ? this.store.knowledgeForRepo(repo, 10) : [])
-      : this.filterAllowedKnowledge(this.store.searchKnowledge(ftsQuery, repo, 10));
+      : this.filterAllowedKnowledge(this.store.searchKnowledge(effectiveQuery, repo, 10));
 
     // 3. Symbols: ranked hits for an explicit query, deterministic top list otherwise.
     const symbols = repo === null
       ? []
       : query !== null && ftsQuery !== null
-        ? this.indexer.searchSymbols(ftsQuery, repo, 15)
+        ? this.indexer.searchSymbols(effectiveQuery, repo, 15)
         : this.indexer.topSymbols(repo, 15);
 
     // 4. Last session handoff for this repo.

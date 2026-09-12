@@ -107,10 +107,13 @@ function termClause(term: string): string {
 export function buildFtsQuery(input: string): string | null {
   const tokens = input.split(/\s+/).filter((t) => t.length > 0).slice(0, MAX_TERMS * 2);
   const parts: string[] = [];
-  let sawTerm = false;
+  let terms = 0;
+  const endsWithOperator = (): boolean => OPERATORS.has(parts[parts.length - 1] ?? '');
   for (const token of tokens) {
     if (OPERATORS.has(token)) {
-      if (sawTerm) {
+      // A leading operator has no left operand, and a second operator in a row
+      // has no right one — either makes FTS5 fail to parse, so both are dropped.
+      if (terms > 0 && !endsWithOperator()) {
         parts.push(token);
       }
       continue;
@@ -119,13 +122,20 @@ export function buildFtsQuery(input: string): string | null {
     if (clean === '') {
       continue;
     }
+    // Explicit AND, never a bare space between clauses: FTS5 rejects the
+    // juxtaposition of two parenthesised expressions (`(a OR b) (c OR d)` is a
+    // syntax error), and every expanded term group is parenthesised. So two
+    // multi-synonym terms in one query would otherwise fail outright.
+    if (terms > 0 && !endsWithOperator()) {
+      parts.push('AND');
+    }
     parts.push(termClause(clean));
-    sawTerm = true;
-    if (parts.filter((p) => !OPERATORS.has(p)).length >= MAX_TERMS) {
+    terms += 1;
+    if (terms >= MAX_TERMS) {
       break;
     }
   }
-  while (parts.length > 0 && OPERATORS.has(parts[parts.length - 1] ?? '')) {
+  while (parts.length > 0 && endsWithOperator()) {
     parts.pop();
   }
   const query = parts.join(' ').trim();
