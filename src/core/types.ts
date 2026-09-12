@@ -247,6 +247,17 @@ export interface RecallCoverage {
   /** True when nothing was dropped and no layer overflowed: the block is
    *  everything the store held for this recall. */
   complete: boolean;
+  /** Per-layer truth about *why* a layer is empty. `complete` alone cannot
+   *  distinguish "the store is empty here" from "nothing matched your query" —
+   *  and the old `complete` comment read as the former in both cases. Each
+   *  entry is undefined when the layer returned anything; when it returned
+   *  nothing, it names whether the store holds rows the recall did not use
+   *  (`searched` with 0 hits) or holds nothing at all (`empty`). */
+  zeroLayers?: {
+    facts?: 'searched' | 'empty';
+    knowledge?: 'searched' | 'empty';
+    symbols?: 'searched' | 'empty';
+  };
 }
 
 export interface RecallResult {

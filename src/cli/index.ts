@@ -6,6 +6,8 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { Engine, DEFAULT_TOKEN_BUDGET, describeSessionSave } from '../core/engine.js';
 import { aegisxHome, dbPath, normalizeRepoPath } from '../core/paths.js';
 import { AegisxError, type KnowledgeKind, type SessionHandoffInput, type SessionSaveSummary } from '../core/types.js';
@@ -18,9 +20,36 @@ import { runSetupWizard } from './setup.js';
 
 const program = new Command();
 
+/* ------------------------------------------------------------------ version */
+
+/**
+ * `--version` used to print the package.json string alone — `1.0.0` since the
+ * first commit, through dozens of behavioral changes, which once made a user
+ * (reasonably) ask why a fresh install still said 1.0.0. The commit and date
+ * are the real build identity; the semver moves only at tagged releases.
+ *
+ * Computed at *command time*, best effort: a copy run outside a git checkout
+ * (npm tarball, someone's `node dist/cli/index.js`) simply omits the suffix
+ * instead of failing — the base version is always printed.
+ */
+export function versionString(): string {
+  const base = '1.0.0';
+  try {
+    // This file lives at <root>/dist/cli/index.js (or src/cli via tsx); the
+    // checkout root is two levels up.
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const opts = { cwd: root, encoding: 'utf8' as const, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'] };
+    const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], opts).trim();
+    const date = execFileSync('git', ['log', '-1', '--format=%cs'], opts).trim();
+    return `${base} (${commit} · ${date})`;
+  } catch {
+    return base;
+  }
+}
+
 program
   .name('aegisxmemory')
-  .version('1.0.0')
+  .version(versionString())
   .description('Persistent memory engine for AI coding agents — stop re-reading your codebase.');
 
 function openEngine(): Engine {

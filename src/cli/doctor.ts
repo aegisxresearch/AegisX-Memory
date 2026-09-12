@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { normalizeRepoPath } from '../core/paths.js';
 import { AegisxError } from '../core/types.js';
+import { SETUP_AGENTS } from './auto-setup.js';
 
 export type CheckStatus = 'pass' | 'warn' | 'fail';
 
@@ -364,7 +365,7 @@ function checkMcpRegistrations(): Check[] {
       },
     ];
   }
-  return regs.map((reg) =>
+  const checks: Check[] = regs.map((reg): Check =>
     reg.entryExists && reg.matchesAegisx
       ? { name: `mcp: ${reg.agent}`, status: 'pass', detail: `${reg.command} ${reg.args.join(' ')} (${reg.configPath})` }
       : reg.entryExists
@@ -381,6 +382,62 @@ function checkMcpRegistrations(): Check[] {
             fix: 'rebuild with `npm run build` or fix the path via `aegisxmemory mcp-config`',
           },
   );
+  // "Installed" but never wired: the CLI works, the agent cannot call it. Only
+  // the agent's *config file* is proof of registration — the binary existing
+  // proves nothing about the client, and users report "it does not respond"
+  // for exactly this state.
+  const unregistered = SETUP_AGENTS.filter(
+    (agent) => !regs.some((reg) => reg.agent === agent),
+  );
+  if (unregistered.length > 0) {
+    checks.push({
+      name: 'mcp registration coverage',
+      status: 'warn',
+      detail: `installed but not registered in: ${unregistered.join(', ')}`,
+      fix: 'run `aegisxmemory setup` (or `mcp-config --install --agent ' + unregistered[0] + '`) to register',
+    });
+  }
+  return checks;
+}
+
+/* ------------------------------------------------------------ memory home */
+
+/** The memory home holds every project's facts; group/world bits leak the
+ *  project list and file sizes to other accounts on shared hosts. Stores
+ *  created before 0700 became the mkdir default can still be loose — doctor
+ *  measures and reports, and `--fix` tightens without touching content. */
+export function checkHomePermissions(homeDir: string): Check {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(homeDir);
+  } catch {
+    return { name: 'memory home', status: 'warn', detail: `${homeDir} does not exist`, fix: 'run `aegisxmemory init`' };
+  }
+  if (!stat.isDirectory()) {
+    return { name: 'memory home', status: 'fail', detail: `${homeDir} is not a directory` };
+  }
+  const mode = stat.mode & 0o777;
+  const groupWorld = (mode & 0o077).toString(8);
+  if (groupWorld === '0') {
+    return { name: 'memory home', status: 'pass', detail: `${homeDir} is owner-only (${mode.toString(8)})` };
+  }
+  return {
+    name: 'memory home',
+    status: 'warn',
+    detail: `${homeDir} is readable beyond the owner (mode ${mode.toString(8)})`,
+    fix: 'run `aegisxmemory doctor --fix` (chmod 700), or `chmod 700 ' + homeDir + '` manually',
+  };
+}
+
+/** Tighten a loose memory home to owner-only. Best effort like every chmod:
+ *  some filesystems refuse it, and that is fine — creation-mode is the guard. */
+export function fixHomePermissions(homeDir: string): boolean {
+  try {
+    fs.chmodSync(homeDir, 0o700);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /* --------------------------------------------------------------- fix pass */
@@ -442,6 +499,21 @@ export function applyFixes(
     }
   }
 
+  // A loose memory home is metadata exposure, not data loss — chmod 700 is
+  // content-preserving, so it qualifies as a safe auto-fix.
+  const homeDir = path.dirname(dbFile);
+  try {
+    if (fs.existsSync(homeDir) && (fs.statSync(homeDir).mode & 0o077) !== 0) {
+      if (fixHomePermissions(homeDir)) {
+        applied.push(`tightened memory home permissions to 700 (${homeDir})`);
+      } else {
+        skipped.push(`could not chmod the memory home (${homeDir}) — filesystem may not support it`);
+      }
+    }
+  } catch {
+    // stat failure is reported by the check itself; never block the fix pass
+  }
+
   return { applied, skipped };
 }
 
@@ -464,6 +536,7 @@ export function runDoctor(dbFile: string, repoAbsPath: string | null, options: D
   }
 
   checks.push(...checkMcpRegistrations());
+  checks.push(checkHomePermissions(path.dirname(dbFile)));
 
   return {
     checks,

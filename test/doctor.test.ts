@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { checkHomePermissions, fixHomePermissions } from '../src/cli/doctor.js';
 import DatabaseConstructor from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -286,6 +287,103 @@ describe('doctor — fix pass (--fix)', () => {
     const report = runDoctor(dbFile, repoDir, { fix: true });
     const text = renderDoctorReport(report, '/fake/home');
     expect(text).toContain('Fixes skipped');
+  });
+
+  it('fix: a loose memory home is tightened to 700 (metadata exposure, not data)', () => {
+    const looseHome = path.join(workspace, 'loose-home');
+    fs.mkdirSync(looseHome, { recursive: true, mode: 0o755 });
+    fs.chmodSync(looseHome, 0o755);
+    const db = path.join(looseHome, 'memory.sqlite');
+    runDoctor(db, null, { fix: true });
+    expect((fs.statSync(looseHome).mode & 0o777).toString(8)).toBe('700');
+  });
+});
+
+describe('doctor — memory home permissions', () => {
+  it('pass: an owner-only home (700) says so', () => {
+    fs.chmodSync(homeDir, 0o700);
+    const check = checkHomePermissions(homeDir);
+    expect(check.status).toBe('pass');
+  });
+
+  it('warn: the pre-0700 default (775) is named with its mode and a chmod fix', () => {
+    fs.chmodSync(homeDir, 0o775);
+    const check = checkHomePermissions(homeDir);
+    expect(check.status).toBe('warn');
+    expect(check.detail).toContain('775');
+    expect(check.fix).toContain('chmod 700');
+  });
+
+  it('warn: a missing home suggests init instead of crashing', () => {
+    const check = checkHomePermissions(path.join(workspace, 'nope'));
+    expect(check.status).toBe('warn');
+    expect(check.fix).toContain('init');
+  });
+
+  it('fixHomePermissions returns true on success and the mode really changes', () => {
+    fs.chmodSync(homeDir, 0o775);
+    expect(fixHomePermissions(homeDir)).toBe(true);
+    expect((fs.statSync(homeDir).mode & 0o777).toString(8)).toBe('700');
+  });
+
+  it('negative: fixHomePermissions on a missing path is false, never a throw', () => {
+    expect(fixHomePermissions(path.join(workspace, 'nope'))).toBe(false);
+  });
+});
+
+describe('doctor — registration coverage', () => {
+  function writeHermesRegistration(): void {
+    const hermesHome = path.join(workspace, 'hermes-home');
+    fs.mkdirSync(hermesHome, { recursive: true });
+    process.env['HERMES_HOME'] = hermesHome;
+    fs.writeFileSync(
+      path.join(hermesHome, 'config.yaml'),
+      'mcp_servers:\n  aegisx-memory:\n    command: "node"\n    args: ["/x/dist/cli/index.js", "mcp"]\n',
+    );
+  }
+
+  it('warn: an installed CLI with no registration anywhere is already covered by the existing warn', () => {
+    delete process.env['HERMES_HOME'];
+    delete process.env['CLAUDE_CONFIG'];
+    const report = runDoctor(dbFile, null);
+    const names = report.checks.map((c) => c.name);
+    expect(names).toContain('mcp registration');
+    expect(names).not.toContain('mcp registration coverage'); // nothing registered → single warn
+  });
+
+  it('warn: one agent registered names the others as installed-but-unregistered', () => {
+    writeHermesRegistration();
+    delete process.env['CLAUDE_CONFIG'];
+    const report = runDoctor(dbFile, null);
+    const coverage = report.checks.find((c) => c.name === 'mcp registration coverage');
+    expect(coverage).toBeDefined();
+    expect(coverage?.status).toBe('warn');
+    expect(coverage?.detail).toContain('claude');
+    expect(coverage?.detail).toContain('cursor');
+    expect(coverage?.detail).not.toContain('hermes');
+  });
+
+  it('negative: no coverage warn when every known agent is registered', () => {
+    writeHermesRegistration();
+    const claudeConfig = path.join(workspace, 'claude.json');
+    process.env['CLAUDE_CONFIG'] = claudeConfig;
+    fs.writeFileSync(claudeConfig, JSON.stringify({ mcpServers: { 'aegisx-memory': { command: 'node', args: ['/x/dist/cli/index.js', 'mcp'] } } }));
+    // Cursor's config derives from the homedir, and doctor reads os.homedir()
+    // at call time — mock it so the test never reaches the real home.
+    fs.mkdirSync(path.join(workspace, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.cursor', 'mcp.json'),
+      JSON.stringify({ mcpServers: { 'aegisx-memory': { command: 'node', args: ['/x/dist/cli/index.js', 'mcp'] } } }),
+    );
+    const realHomedir = os.homedir;
+    os.homedir = () => workspace;
+    try {
+      const report = runDoctor(dbFile, null);
+      expect(report.checks.find((c) => c.name === 'mcp registration coverage')).toBeUndefined();
+      expect(report.checks.filter((c) => c.name.startsWith('mcp: '))).toHaveLength(3);
+    } finally {
+      os.homedir = realHomedir;
+    }
   });
 });
 

@@ -564,10 +564,15 @@ export class Engine {
     const KNOWLEDGE_LIMIT = full ? FULL_LAYER_LIMIT : 10;
     const SYMBOL_LIMIT = full ? FULL_LAYER_LIMIT : 15;
 
-    // 1. Workspace-anchored facts always come first.
-    const factsRaw = repo !== null
-      ? this.store.factsForRepo(repo, FACT_LIMIT + 1)
-      : [];
+    // 1. Workspace-anchored facts always come first. Anchored = query-less:
+    //    every fact of this repo is relevant because the agent asked for the
+    //    repo, not for a topic. With an explicit query, the FTS search below
+    //    decides relevance — an unconditional base layer would answer a
+    //    question like "how does the auth work?" with three facts about ports
+    //    and deployment, and a no-hit query could never report honestly.
+    const factsRaw = repo === null || !anchored
+      ? []
+      : this.store.factsForRepo(repo, FACT_LIMIT + 1);
     const factsTruncated = factsRaw.length > FACT_LIMIT;
     const facts = factsRaw.slice(0, FACT_LIMIT);
     if (!anchored && ftsQuery !== null) {
@@ -648,6 +653,30 @@ export class Engine {
         !knowledgeTruncated &&
         !symbolsTruncated,
     };
+
+    // Why is a layer empty? `complete` cannot tell "nothing matched" from
+    // "nothing stored" — and an agent reading `complete` over an empty block
+    // concludes the store is blank when the real answer is "your query found
+    // nothing; ask differently". Count what each layer did not use.
+    const zeroLayers: RecallCoverage['zeroLayers'] = {};
+    // Knowledge withheld by the handoff reprint is served below — that is not
+    // a miss, so the layer only counts as "matched nothing" when the store
+    // holds rows the recall genuinely did not use.
+    if (knowledge.length === 0 && repo !== null && rankedKnowledge.length - knowledge.length === 0) {
+      const stored = this.store.countForRepo(repo).knowledge;
+      if (stored > 0) zeroLayers.knowledge = 'searched';
+    }
+    if (facts.length === 0 && repo !== null) {
+      const stored = this.store.countForRepo(repo).facts;
+      if (stored > 0) zeroLayers.facts = 'searched';
+    }
+    if (symbols.length === 0 && repo !== null) {
+      const stored = this.indexer.countSymbols(repo);
+      if (stored > 0) zeroLayers.symbols = 'searched';
+    }
+    if (zeroLayers.facts !== undefined || zeroLayers.knowledge !== undefined || zeroLayers.symbols !== undefined) {
+      coverage.zeroLayers = zeroLayers;
+    }
 
     const result: RecallResult = { brief, facts, symbols, knowledge, lastSession, tokenEstimate, coverage };
     // Telemetry: record every recall (hit = any facts/symbols/knowledge/session returned)
@@ -735,6 +764,18 @@ export class Engine {
  */
 function recallCoverageComment(result: RecallResult): string {
   const { coverage: c } = result;
+  // An empty layer with rows in the store is the one case "complete" lies about:
+  // technically nothing was withheld, but the reader needs "your query matched
+  // nothing — ask differently", not a word that sounds like "you got it all".
+  const z = c.zeroLayers;
+  if (z !== undefined && (z.facts !== undefined || z.knowledge !== undefined)) {
+    const parts: string[] = [];
+    if (z.facts !== undefined) parts.push('0 facts (some exist, none matched)');
+    if (z.knowledge !== undefined) parts.push('0 knowledge (some exist, none matched)');
+    if (z.symbols !== undefined) parts.push('0 symbols (some indexed, none matched)');
+    return `<!-- recall: no hits — ${parts.join(' · ')} · query differently or recall without a query for the repo-anchored block · ` +
+      `${c.tokens} tokens (budget ${c.budget}) -->`;
+  }
   // The short form is only for a block with nothing to explain. A recall whose
   // knowledge layer is empty because the handoff reprints it is complete — it
   // lost nothing — but the reader still deserves to know where the notes went.

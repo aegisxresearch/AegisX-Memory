@@ -96,7 +96,7 @@ describe('buildFtsQuery — semantic-lite expansion', () => {
   it('capped at MAX_ALTS_PER_TERM alternatives per term', () => {
     const q = buildFtsQuery('auth');
     const orCount = (q?.match(/ OR /g) ?? []).length;
-    expect(orCount).toBeLessThanOrEqual(4); // 5 alts → 4 ORs
+    expect(orCount).toBeLessThanOrEqual(7); // 8 alts → 7 ORs
   });
 
   it('adds prefix stem for longer words outside synonym groups', () => {
@@ -118,6 +118,59 @@ describe('buildFtsQuery — semantic-lite expansion', () => {
 
   it('operator-ish terms still parse after expansion of neighbors', () => {
     expect(buildFtsQuery('uji AND bukan OR test')).toBeTruthy();
+  });
+});
+
+describe('synonym coverage — the pairs the 2026-09 gap analysis measured', () => {
+  // Every pair here is one that recall answered with `no hits` before the map
+  // was extended: the query side never shared a token with the stored side.
+  const PAIRS: ReadonlyArray<readonly [query: string, stored: string]> = [
+    ['gagal', 'error'],
+    ['salah', 'wrong'],
+    ['rusak', 'broken'],
+    ['batal', 'cancel'],
+    ['langganan', 'subscription'],
+    // two-word query: both terms must bridge (AND-joined clauses), so the
+    // stored note carries both English words like a real note would.
+    ['batal langganan', 'cancel the subscription'],
+    ['pembayaran', 'payment'],
+    ['hapus', 'delete'],
+    ['simpan', 'save'],
+    ['lambat', 'slow'],
+    ['perbaiki', 'fix'],
+    ['cari', 'find'],
+    ['mati', 'crash'],
+  ];
+
+  let db: InstanceType<typeof DatabaseConstructor>;
+  let match: (input: string) => number;
+
+  beforeEach(() => {
+    db = new DatabaseConstructor(':memory:');
+    db.exec('CREATE VIRTUAL TABLE docs USING fts5(body)');
+    match = (input) => {
+      const q = buildFtsQuery(input);
+      if (q === null) return 0;
+      return (db.prepare('SELECT rowid FROM docs WHERE docs MATCH ?').all(q) as unknown[]).length;
+    };
+  });
+
+  afterEach(() => db.close());
+
+  for (const [query, stored] of PAIRS) {
+    it(`"${query}" finds a note that only says "${stored}"`, () => {
+      db.exec('DELETE FROM docs');
+      db.prepare('INSERT INTO docs(body) VALUES (?)').run(`note: ${stored}`);
+      expect(match(query)).toBe(1);
+    });
+  }
+
+  it('an 8-alternative cap still parses against a real FTS5 table', () => {
+    // MAX_ALTS_PER_TERM went 5 → 8 for the new groups; a syntax error here
+    // would surface in recall, not in the parser, so it is tested at the table.
+    const q = buildFtsQuery('test');
+    expect(q).toBeTruthy();
+    expect(() => db.prepare('SELECT rowid FROM docs WHERE docs MATCH ?').all(q as string)).not.toThrow();
   });
 });
 

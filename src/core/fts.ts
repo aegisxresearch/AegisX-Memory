@@ -13,7 +13,7 @@
  */
 const OPERATORS = new Set(['AND', 'OR', 'NOT']);
 const MAX_TERMS = 24;
-const MAX_ALTS_PER_TERM = 5;
+const MAX_ALTS_PER_TERM = 8;
 
 /**
  * Hand-written synonym groups — deterministic, zero-cost, trivially correctable.
@@ -36,7 +36,15 @@ const SYNONYM_GROUPS: readonly (readonly string[])[] = [
   ['deploy', 'rilis', 'release', 'publikasi'],
   // testing & quality
   ['test', 'uji', 'tes', 'spec', 'pengujian'],
-  ['bug', 'error', 'kesalahan', 'galat', 'issue'],
+  // failure is one concept in two languages: the 2026-09 gap analysis measured
+  // `gagal` → nothing because it sat in a different group than `error` —
+  // groups do not cross-link, so words of one concept must share one group.
+  ['bug', 'error', 'kesalahan', 'galat', 'issue', 'gagal', 'fail'],
+  ['wrong', 'salah', 'keliru'],
+  ['broken', 'rusak', 'kacau'],
+  ['crash', 'mati', 'hang', 'freeze'],
+  ['cancel', 'batal', 'batalkan'],
+  ['subscribe', 'langganan', 'subscription', 'berlangganan'],
   ['lint', 'linter', 'gaya-kode'],
   ['benchmark', 'tuning', 'performa', 'performance'],
   // data & infra
@@ -46,6 +54,14 @@ const SYNONYM_GROUPS: readonly (readonly string[])[] = [
   ['api', 'endpoint', 'route', 'rute', 'sambungan'],
   ['secret', 'rahasia', 'credential', 'kredensial', 'token'],
   ['key', 'kunci'],
+  ['payment', 'pembayaran', 'bayar', 'transaksi'],
+  ['search', 'cari', 'pencarian', 'telusuri'],
+  ['delete', 'hapus', 'del', 'buang'],
+  ['save', 'simpan', 'tulis'],
+  ['find', 'temukan', 'cari'],
+  ['slow', 'lambat', 'lemot'],
+  ['fast', 'cepat', 'kencang'],
+  ['fix', 'perbaiki', 'perbaikan', 'solusi', 'solution'],
   // project meta
   ['stack', 'teknologi', 'framework', 'kerangka'],
   ['convention', 'konvensi', 'aturan', 'kebiasaan'],

@@ -374,4 +374,53 @@ describe('recall coverage — a cut is stated, never implied', () => {
     expect(impossible.coverage.budget).toBe(1);
     expect(impossible.coverage.tokens).toBe(impossible.tokenEstimate);
   });
+
+  it('an empty layer with rows in the store says the query matched nothing — not that the store is empty', () => {
+    // Facts + symbols exist, but the query shares no token with them.
+    engine.remember('deployment-port', 'production runs on port 5000', repoDir);
+    engine.indexRepo(repoDir);
+
+    const result = engine.recall('quantum-flux-capacitor', repoDir);
+    expect(result.facts).toHaveLength(0);
+    expect(result.coverage.complete).toBe(true); // technically nothing was withheld
+    expect(result.coverage.zeroLayers?.facts).toBe('searched');
+    const md = engine.renderMarkdown(result);
+    expect(md).toContain('0 facts (some exist, none matched)');
+    expect(md).toContain('no hits');
+    // The old `complete` word must not sit next to an empty block: it read as
+    // "you got everything" when the truth was "your query found nothing".
+    expect(md).not.toContain('recall: complete');
+  });
+
+  it('an empty layer in an empty store is not mislabelled as a search miss', () => {
+    // Nothing remembered, nothing indexed: `empty` is the honest state, and no
+    // zeroLayers entry is recorded because the store holds nothing at all.
+    const result = engine.recall('anything', repoDir);
+    expect(result.facts).toHaveLength(0);
+    expect(result.knowledge).toHaveLength(0);
+    expect(result.coverage.zeroLayers).toBeUndefined();
+    // A truly empty store keeps the short complete form — nothing was withheld
+    // and nothing was missed.
+    expect(engine.renderMarkdown(result)).toContain('recall: complete');
+  });
+
+  it('knowledge is the layer reported when only knowledge missed', () => {
+    engine.remember('test-cmd', 'npm test', repoDir); // one fact, matches below
+    engine.saveSession(repoDir, {
+      goal: 'older session so the knowledge layer is served from the store',
+      facts: [],
+      decisions: ['we chose postgres for the billing service'],
+      gotchas: [],
+      conventions: [],
+      nextSteps: [],
+    });
+    engine.saveSession(repoDir, { goal: 'newer handoff takes the reprint slot', facts: [], decisions: [], gotchas: [], conventions: [], nextSteps: [] });
+
+    const result = engine.recall('webpack-config-mystery', repoDir);
+    expect(result.facts).toHaveLength(0);
+    expect(result.knowledge).toHaveLength(0);
+    expect(result.coverage.zeroLayers?.facts).toBe('searched');
+    expect(result.coverage.zeroLayers?.knowledge).toBe('searched');
+    expect(engine.renderMarkdown(result)).toContain('0 knowledge (some exist, none matched)');
+  });
 });
