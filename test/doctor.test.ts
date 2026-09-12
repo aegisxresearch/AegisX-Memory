@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import DatabaseConstructor from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -59,6 +60,34 @@ describe('doctor — database checks', () => {
     const db = statusOf(checks, 'database');
     expect(db?.status).toBe('warn');
     expect(db?.fix).toContain('aegisxmemory init');
+  });
+
+  it('reports the one-time knowledge backfill, and stays quiet before it has run', () => {
+    // Before any open there is no record, so doctor says nothing about it rather
+    // than printing a row of zeros.
+    const legacy = path.join(workspace, 'legacy.sqlite');
+    const raw = new DatabaseConstructor(legacy);
+    raw.exec(`
+      CREATE TABLE sessions (
+        id INTEGER PRIMARY KEY,
+        repo TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        facts TEXT NOT NULL,
+        decisions TEXT NOT NULL,
+        next_steps TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+    raw
+      .prepare('INSERT INTO sessions (repo, goal, facts, decisions, next_steps, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(repoDir, 'g', '[]', JSON.stringify(['pick sqlite over postgres']), '[]', '2026-01-01T00:00:00.000Z');
+    raw.close();
+
+    const opened = new Engine(legacy);
+    opened.close();
+    const backfill = statusOf(checkDatabase(legacy), 'knowledge backfill');
+    expect(backfill?.status).toBe('pass');
+    expect(backfill?.detail).toContain('1 entries from 1 old handoffs');
   });
 
   it('fail: corrupt DB is caught at open/integrity time, not silently passed', () => {

@@ -13,9 +13,11 @@ import {
   type KnowledgeRecord,
   type MemoryFact,
   type SessionHandoff,
+  type SessionSaveSummary,
 } from './types.js';
 import { buildFtsQuery } from './fts.js';
 import { secureDbFile } from './db-perms.js';
+import { containsSecret } from './secrets.js';
 
 /** Fact values above this length are truncated, never rejected — a failed
  *  remember() burns an agent turn; a slightly-shortened value does not.
@@ -31,6 +33,8 @@ export const FACT_HISTORY_MAX = 10;
 /** Telemetry retention window (ISO timestamps compare lexicographically). */
 export const TELEMETRY_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+/** `meta` key recording the one-time backfill of pre-v1.13 handoff decisions. */
+export const KNOWLEDGE_BACKFILL_META = 'knowledge-backfill';
 
 /**
  * Derive a knowledge title from a free-form sentence (a handoff decision line),
@@ -211,6 +215,51 @@ export class Store {
       `);
     }
     this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_identity ON knowledge(repo, kind, title);`);
+    this.backfillKnowledgeFromHandoffs();
+  }
+
+  /**
+   * One-time: fold the decisions of handoffs written *before* knowledge had a
+   * producer (RFC v1.13) into the knowledge store.
+   *
+   * Those sessions are the only record of the decisions taken back then, so
+   * without this a repo's "Decisions & gotchas" block and its graph would show
+   * only what happened after the upgrade. Notes go through the same upsert as a
+   * live save, so one sentence repeated across handoffs collapses into a single
+   * entry and re-running the scan changes nothing; a `meta` marker keeps the
+   * scan to once per database.
+   */
+  private backfillKnowledgeFromHandoffs(): void {
+    if (this.getMeta(KNOWLEDGE_BACKFILL_META) !== undefined) {
+      return;
+    }
+    const rows = this.prepared('SELECT repo, decisions FROM sessions ORDER BY id').all() as Array<{
+      repo: string;
+      decisions: string;
+    }>;
+    let recorded = 0;
+    let alreadyKnown = 0;
+    let skippedSecrets = 0;
+    for (const row of rows) {
+      const notes: string[] = [];
+      for (const note of parseStringArray(row.decisions)) {
+        // Rows written before the storage-time secret scan existed (RFC v1.2)
+        // can still hold a credential; copying one into a new table would
+        // re-publish exactly what that scan was added to keep out.
+        if (containsSecret(note)) {
+          skippedSecrets += 1;
+          continue;
+        }
+        notes.push(note);
+      }
+      const summary = this.recordHandoffNotes(row.repo, notes);
+      recorded += summary.decisionsRecorded;
+      alreadyKnown += summary.decisionsAlreadyKnown;
+    }
+    this.setMeta(
+      KNOWLEDGE_BACKFILL_META,
+      JSON.stringify({ sessions: rows.length, recorded, alreadyKnown, skippedSecrets, at: new Date().toISOString() }),
+    );
   }
 
   private prepared(sql: string): Statement {
@@ -435,6 +484,20 @@ export class Store {
       record.updated = true;
     }
     return record;
+  }
+
+  /**
+   * Record handoff notes (the handoff's `decisions`) as knowledge, upserted by
+   * their sentence. The single implementation behind a live `save` and the
+   * one-time backfill of handoffs written before knowledge had a producer.
+   */
+  recordHandoffNotes(repo: string, notes: readonly string[]): SessionSaveSummary {
+    const before = this.countKnowledge();
+    for (const note of notes) {
+      this.saveKnowledge(repo, 'decision', knowledgeTitle(note), note, []);
+    }
+    const recorded = this.countKnowledge() - before;
+    return { decisionsRecorded: recorded, decisionsAlreadyKnown: notes.length - recorded };
   }
 
   knowledgeForRepo(repo: string, limit = 20): KnowledgeRecord[] {
@@ -777,6 +840,17 @@ export class Store {
 
 /** Back-compat alias: free-text → safe FTS5 query. */
 export const ftsEscape = buildFtsQuery;
+
+/** Parse a JSON string list out of a `sessions` column. Legacy rows can hold
+ *  anything, and one mangled value must not abort a migration. */
+function parseStringArray(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 function assertHandoff(handoff: SessionHandoff): void {
   if (handoff.goal.trim().length === 0) {

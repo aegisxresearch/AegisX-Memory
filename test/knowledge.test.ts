@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Engine } from '../src/core/engine.js';
 import { normalizeRepoPath } from '../src/core/paths.js';
-import { KNOWLEDGE_TITLE_MAX, Store } from '../src/core/store.js';
+import { KNOWLEDGE_BACKFILL_META, KNOWLEDGE_TITLE_MAX, Store } from '../src/core/store.js';
 import { AegisxError, type KnowledgeKind } from '../src/core/types.js';
 
 let workspace: string;
@@ -228,6 +228,121 @@ describe('knowledge — the save path records handoff decisions', () => {
       expect(markdown).not.toContain('- (decision) **');
     } finally {
       engine.close();
+    }
+  });
+});
+
+/** A database holding handoffs written before knowledge had a producer: the
+ *  sessions table only, and no `meta` marker to say the backfill already ran. */
+function writeLegacyHandoffs(file: string, rows: Array<{ repo: string; decisions: string }>): void {
+  const raw = new DatabaseConstructor(file);
+  raw.exec(`
+    CREATE TABLE sessions (
+      id INTEGER PRIMARY KEY,
+      repo TEXT NOT NULL,
+      goal TEXT NOT NULL,
+      facts TEXT NOT NULL,
+      decisions TEXT NOT NULL,
+      next_steps TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+  const insert = raw.prepare(
+    'INSERT INTO sessions (repo, goal, facts, decisions, next_steps, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  rows.forEach((row, index) => {
+    insert.run(
+      row.repo,
+      `session ${index}`,
+      '[]',
+      row.decisions,
+      '[]',
+      `2026-01-0${index + 1}T00:00:00.000Z`,
+    );
+  });
+  raw.close();
+}
+
+describe('knowledge — one-time backfill of handoffs written before knowledge had a producer', () => {
+  it('folds their decisions into knowledge, collapsing repeats across handoffs', () => {
+    const legacy = path.join(workspace, 'legacy-handoffs.sqlite');
+    writeLegacyHandoffs(legacy, [
+      { repo, decisions: JSON.stringify(['pick sqlite over postgres']) },
+      { repo, decisions: JSON.stringify(['pick sqlite over postgres', 'keep WAL on']) },
+    ]);
+
+    const migrated = new Store(legacy);
+    try {
+      expect(migrated.knowledgeForRepo(repo).map((k) => k.title).sort()).toEqual([
+        'keep WAL on',
+        'pick sqlite over postgres',
+      ]);
+      expect(migrated.knowledgeForRepo(repo).every((k) => k.kind === 'decision')).toBe(true);
+      expect(JSON.parse(migrated.getMeta(KNOWLEDGE_BACKFILL_META) ?? '{}')).toMatchObject({
+        sessions: 2,
+        recorded: 2,
+        alreadyKnown: 1,
+        skippedSecrets: 0,
+      });
+    } finally {
+      migrated.close();
+    }
+
+    // the marker makes it once-only: reopening must not duplicate or re-scan
+    const reopened = new Store(legacy);
+    try {
+      expect(reopened.countKnowledge()).toBe(2);
+      expect(reopened.countSessions()).toBe(2);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it('does not resurrect a credential from a handoff written before the secret scan', () => {
+    const legacy = path.join(workspace, 'legacy-secret.sqlite');
+    writeLegacyHandoffs(legacy, [
+      { repo, decisions: JSON.stringify(['rotate ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'keep WAL on']) },
+    ]);
+
+    const migrated = new Store(legacy);
+    try {
+      expect(migrated.knowledgeForRepo(repo).map((k) => k.title)).toEqual(['keep WAL on']);
+      expect(JSON.parse(migrated.getMeta(KNOWLEDGE_BACKFILL_META) ?? '{}')).toMatchObject({
+        recorded: 1,
+        skippedSecrets: 1,
+      });
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it('opens anyway when a legacy row holds a mangled decisions column', () => {
+    const legacy = path.join(workspace, 'legacy-mangled.sqlite');
+    writeLegacyHandoffs(legacy, [{ repo, decisions: 'not json at all' }]);
+
+    const migrated = new Store(legacy);
+    try {
+      expect(migrated.countKnowledge()).toBe(0);
+      expect(JSON.parse(migrated.getMeta(KNOWLEDGE_BACKFILL_META) ?? '{}')).toMatchObject({ sessions: 1, recorded: 0 });
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it('keeps each repo\'s decisions under that repo', () => {
+    const other = path.join(workspace, 'other-backfill');
+    const legacy = path.join(workspace, 'legacy-two-repos.sqlite');
+    writeLegacyHandoffs(legacy, [
+      { repo, decisions: JSON.stringify(['alpha decision']) },
+      { repo: other, decisions: JSON.stringify(['beta decision']) },
+    ]);
+
+    const migrated = new Store(legacy);
+    try {
+      expect(migrated.knowledgeForRepo(repo).map((k) => k.title)).toEqual(['alpha decision']);
+      expect(migrated.knowledgeForRepo(other).map((k) => k.title)).toEqual(['beta decision']);
+    } finally {
+      migrated.close();
     }
   });
 });

@@ -61,6 +61,8 @@ interface IndexStats {
 interface DoctorEngine {
   dbIntegrityCheck(): string;
   dbTableNames(): string[];
+  /** Record of the one-time knowledge backfill, when it has run. */
+  knowledgeBackfillReport(): string | undefined;
   driftCheck(repo: string): DriftResult;
   indexRepo(repoAbsPath: string, onWarn?: (msg: string) => void): IndexStats;
   close(): void;
@@ -94,6 +96,33 @@ function withEngine<T>(dbFile: string, fn: (engine: DoctorEngine) => T): T {
 
 /* ------------------------------------------------------------- DB checks */
 
+/** The `meta` record left by the one-time knowledge backfill (see Store). */
+interface BackfillRecord {
+  sessions: number;
+  recorded: number;
+  alreadyKnown: number;
+  skippedSecrets: number;
+  at: string;
+}
+
+function parseBackfillRecord(raw: string | undefined): BackfillRecord | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<BackfillRecord>;
+    return {
+      sessions: parsed.sessions ?? 0,
+      recorded: parsed.recorded ?? 0,
+      alreadyKnown: parsed.alreadyKnown ?? 0,
+      skippedSecrets: parsed.skippedSecrets ?? 0,
+      at: typeof parsed.at === 'string' ? parsed.at : '',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function checkDatabase(dbFile: string): Check[] {
   if (!fs.existsSync(dbFile)) {
     return [
@@ -107,13 +136,16 @@ export function checkDatabase(dbFile: string): Check[] {
   }
   let integrity = 'unknown';
   let tables: string[] = [];
+  let backfill: BackfillRecord | undefined;
   try {
     const result = withEngine(dbFile, (engine) => ({
       integrity: engine.dbIntegrityCheck(),
       tables: engine.dbTableNames(),
+      backfill: engine.knowledgeBackfillReport(),
     }));
     integrity = result.integrity;
     tables = result.tables;
+    backfill = parseBackfillRecord(result.backfill);
   } catch (err) {
     return [
       {
@@ -151,6 +183,22 @@ export function checkDatabase(dbFile: string): Check[] {
             fix: 'run `aegisxmemory init` to re-migrate',
           },
   );
+  // The one-time backfill of pre-v1.13 handoff decisions writes its own record;
+  // surfacing it keeps a migration that ran on open from being invisible.
+  if (backfill !== undefined) {
+    const parts = [`${backfill.recorded} entries from ${backfill.sessions} old handoffs`];
+    if (backfill.alreadyKnown > 0) {
+      parts.push(`${backfill.alreadyKnown} already known`);
+    }
+    if (backfill.skippedSecrets > 0) {
+      parts.push(`${backfill.skippedSecrets} skipped as secrets`);
+    }
+    checks.push({
+      name: 'knowledge backfill',
+      status: 'pass',
+      detail: `${parts.join(', ')} (${backfill.at.slice(0, 10)})`,
+    });
+  }
   return checks;
 }
 

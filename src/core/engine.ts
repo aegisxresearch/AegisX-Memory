@@ -9,7 +9,7 @@
  * global recall is additionally filtered so other repos' knowledge never leaks.
  */
 import { normalizeRepoPath, parseAllowedRepos, assertRepoAllowed } from './paths.js';
-import { Store, ftsEscape, knowledgeTitle } from './store.js';
+import { Store, ftsEscape, KNOWLEDGE_BACKFILL_META } from './store.js';
 import { Indexer, isSecretBearingFile } from '../indexer/indexer.js';
 import { containsSecret } from './secrets.js';
 import { AegisxError, type FactHistoryEntry, type KnowledgeRecord, type MemoryFact, type ObservabilityStats, type RecallResult, type ScanStats, type SessionSaveSummary } from './types.js';
@@ -129,17 +129,13 @@ export class Engine {
     // findable in later sessions instead of living only inside the one handoff
     // it was written in, and a decision repeated across sessions is refreshed
     // rather than forked.
-    const before = this.store.countKnowledge();
-    for (const decision of handoff.decisions) {
-      this.store.saveKnowledge(repo, 'decision', knowledgeTitle(decision), decision, []);
-    }
-    // Created entries are the count delta; every other decision landed on a
-    // sentence that was already stored (identical, or overwritten).
-    const recorded = this.store.countKnowledge() - before;
-    return {
-      decisionsRecorded: recorded,
-      decisionsAlreadyKnown: handoff.decisions.length - recorded,
-    };
+    return this.store.recordHandoffNotes(repo, handoff.decisions);
+  }
+
+  /** Record of the one-time backfill of pre-v1.13 handoff decisions, if it has
+   *  run (the doctor report surfaces it). */
+  knowledgeBackfillReport(): string | undefined {
+    return this.store.getMeta(KNOWLEDGE_BACKFILL_META);
   }
 
   /** Read-only drift analysis between the index ledger and the disk (doctor). */
