@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,5 +43,40 @@ describe('setup wizard — non-interactive (piped) path', () => {
     const first = fs.readFileSync(path.join(workspace, 'HERMES_HOME', 'SOUL.md'), 'utf8');
     await runSetupWizard();
     expect(fs.readFileSync(path.join(workspace, 'HERMES_HOME', 'SOUL.md'), 'utf8')).toBe(first);
+  });
+});
+
+describe('setup wizard — project rules (AGENTS.md)', () => {
+  it('plants the memory contract in the project directory the CLI passes', async () => {
+    const project = path.join(workspace, 'proj');
+    fs.mkdirSync(project, { recursive: true });
+    await runSetupWizard(undefined, { projectDir: project });
+    const rules = fs.readFileSync(path.join(project, 'AGENTS.md'), 'utf8');
+    expect(rules).toContain('aegisx-memory:auto-rules BEGIN');
+    expect(rules).toContain('recall');
+  });
+
+  it('negative: never scatters rules into the home directory', async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      await runSetupWizard(undefined, { projectDir: os.homedir() });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(writes.join('')).not.toContain('project:');
+  });
+
+  it('negative: a programmatic caller that passes no directory writes no project file', async () => {
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await runSetupWizard();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.existsSync(path.join(workspace, 'AGENTS.md'))).toBe(false);
   });
 });

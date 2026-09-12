@@ -783,6 +783,10 @@ Recall composition, toward a token budget (default 2,000; a target, not a ceilin
 
 ## 20. Roadmap
 
+The phased plan — every item with its reason, size and proof-of-done — lives in
+[`docs/ROADMAP-POWERFUL.md`](docs/ROADMAP-POWERFUL.md). In short:
+
+- **v1.x** — the memory contract (`AGENTS.md`) in every agent, config writers for the remaining popular clients, hooks that recall without relying on model obedience, honest recall when the answer is empty.
 - **v2** — local embedding model for semantic recall, audit log, per-agent config generators.
 - **v3** — encrypted cross-device sync (CRDT), team-shared knowledge graphs.
 

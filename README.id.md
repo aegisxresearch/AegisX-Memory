@@ -783,6 +783,10 @@ Komposisi recall, menuju batas token (default 2.000; target, bukan plafon — lo
 
 ## 20. Roadmap
 
+Rencana bertahap — setiap item dengan alasannya, perkiraan usaha, dan cara membuktikan selesai — ada di
+[`docs/ROADMAP-POWERFUL.md`](docs/ROADMAP-POWERFUL.md). Ringkasnya:
+
+- **v1.x** — kontrak memori (`AGENTS.md`) di semua agent, penulis config untuk klien populer yang belum didukung, hook yang recall tanpa bergantung kepatuhan model, recall yang jujur saat jawabannya kosong.
 - **v2** — model embedding lokal untuk recall semantik, audit log, generator config per-agent.
 - **v3** — sinkronisasi lintas perangkat terenkripsi (CRDT), knowledge graph yang bisa dibagi antar tim.
 

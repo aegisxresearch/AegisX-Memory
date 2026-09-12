@@ -193,26 +193,93 @@ const RULES_BEGIN = '<!-- aegisx-memory:auto-rules BEGIN -->';
 const RULES_END = '<!-- aegisx-memory:auto-rules END -->';
 
 /**
- * The standing-behavior block: makes memory automatic instead of opt-in.
- * Tool names are generic (they differ per client: Hermes prefixes with
- * `mcp__aegisx_memory__`), so the rules reference the tool purpose, not wiring.
+ * The standing-behavior block — the contract that makes memory automatic
+ * instead of opt-in, injected into every agent's own instructions file.
+ *
+ * Two deliberate design choices.
+ *
+ * 1. **Tool names are generic.** They differ per client (Hermes prefixes with
+ *    `mcp__aegisx_memory__`, Claude with `mcp__aegisx-memory__`), so the rules
+ *    name the tool by what it does. Wiring lives in `doctor`, not here.
+ * 2. **It explains the coverage line.** Since v1.29 every recall block ends by
+ *    stating what it left out. An agent that does not know what `(more exist)`
+ *    or `budget dropped` mean will misread a clipped block as an empty store —
+ *    which is precisely the bug this block exists to prevent.
  */
 export function memoryRulesBlock(): string {
   return [
     RULES_BEGIN,
-    '## AegisX-Memory — automatic project memory (mandatory)',
+    '## AegisX-Memory — project memory (do this automatically)',
     '',
-    '- At the START of every working session, call the aegisx-memory `recall` tool for the current repo before anything else. Use its context block instead of re-reading code it already covers.',
-    '- When you learn a stable project fact (test command, stack, ports, build steps, conventions), persist it immediately with the aegisx-memory `remember` tool under a dot-namespaced key like `project.<name>.<key>`.',
-    '- When you discover a decision, gotcha, convention, or lesson worth keeping, put it in the matching `save` handoff list (`decisions`, `gotchas`, `conventions`) — each entry is stored as a searchable knowledge entry — so it does not live only in this chat.',
-    '- At the END of every session (or after a meaningful change), call the aegisx-memory `save` tool with a JSON handoff (goal, facts, decisions, gotchas, conventions, nextSteps) so the next session resumes warm.',
-    '- Never store secrets (API keys, passwords, tokens, URLs with credentials) — the engine refuses them; do not try to work around that.',
+    'A local memory engine holds this project\u2019s facts, decisions, gotchas and handoffs.',
+    'It is where the answers to \u201cwhat did we already work out?\u201d live. Nothing leaves this machine.',
+    'Loading it costs a few hundred tokens; re-reading the code it replaces costs thousands.',
+    '',
+    '### Start of a session — before you read any file',
+    '',
+    '- Call the aegisx-memory `recall` tool for the current repo. It may appear under the client\u2019s own tool prefix \u2014 same tool.',
+    '- If the block shows no indexed files for this repo, call `index` on it once, then recall again.',
+    '- Read its closing coverage line. It states what the block left out:',
+    '  - `complete` \u2014 nothing was withheld; do not fetch more.',
+    '  - `(more exist)` or `budget dropped \u2026` \u2014 the block was clipped. Query for what you',
+    '    need (`recall \"<the task at hand>\"`) instead of concluding the rest is empty.',
+    '  - `N in handoff` \u2014 those notes are printed in the handoff section below, not lost.',
+    '- Then read only the code the block does not already cover.',
+    '',
+    '### While working',
+    '',
+    '- A focused query beats a bare one: `recall \"token rotation\"`, not `recall`.',
+    '- Learned a stable fact (test command, port, stack, build step)? Persist it now with',
+    '  `remember`, keyed like `project.<name>.<key>`. Short values; re-pinning a key keeps the',
+    '  old value, which recall reports as `was \u2026`.',
+    '- Made or hit a **decision, gotcha, convention or lesson**? Put it in the matching list of',
+    '  the next `save` handoff \u2014 each entry becomes searchable knowledge. A note that lives',
+    '  only in this chat is lost to the next session.',
+    '- One self-contained sentence per note, **with the reason**: \u201cuse sqlite, not postgres \u2014',
+    '  zero-config\u201d. A vague note is worse than none: it spends recall budget and still cannot',
+    '  be found.',
+    '',
+    '### Correcting memory',
+    '',
+    '- Memory is yours to fix, not permanent: `knowledge --forget <id>` deletes an entry, and',
+    '  re-recording the same sentence replaces it in place.',
+    '- Do not record what the repo already states \u2014 paths, line numbers, file contents. Store',
+    '  conclusions, not sources.',
+    '',
+    '### End of a session (or after a meaningful change)',
+    '',
+    '- Call `save` with a JSON handoff: `goal`, `facts`, `decisions`, `gotchas`, `conventions`,',
+    '  `nextSteps`. This is what makes the next session start warm. No categories apply? Save the',
+    '  goal and next steps anyway.',
+    '',
+    '### Never',
+    '',
+    '- Never store secrets \u2014 API keys, passwords, tokens, credentialed URLs. The engine refuses',
+    '  them; do not work around the refusal.',
+    '- Never paste whole files into memory.',
     RULES_END,
   ].join('\n');
 }
 
-/** Seed identity so a freshly created Hermes SOUL.md does not wipe the agent persona. */
-const SOUL_SEED = ['# Identity', '', 'You are Hermes, a direct, technically sharp AI assistant. Match reply length to the weight of the ask; be concrete and verify claims.', ''].join('\n');
+/**
+ * Seed identity for a freshly created Hermes SOUL.md, so installing the memory
+ * rules never leaves the agent without a persona — and so the working habits the
+ * memory contract depends on (verify with real output, say what is unknown) are
+ * stated next to it rather than assumed.
+ */
+const SOUL_SEED = [
+  '# Identity',
+  '',
+  'You are Hermes, a direct, technically sharp AI assistant. Match reply length to the',
+  'weight of the ask; be concrete and verify claims with real tool output.',
+  '',
+  '# Working style',
+  '',
+  '- One real run beats several guesses: execute, read the output, then explain.',
+  '- Say what you did not verify. A stated unknown is worth more than a confident mistake.',
+  '- When a change is done, state the evidence — command, result, and what it proves.',
+  '',
+].join('\n');
 
 /** Default standing-rules file per agent (SOUL.md for Hermes per docs). */
 export function rulesPathFor(agent: SetupAgent): string {
@@ -257,6 +324,67 @@ export function installRulesForAgent(agent: SetupAgent, options: RawOptions = {}
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
   return { agent, path: file, action: existing === null ? 'created' : 'updated', backupPath };
+}
+
+/* ------------------------------------------- project-level rules (AGENTS.md) */
+
+/**
+ * The rules block written into a *repository* instead of one client's config.
+ *
+ * `AGENTS.md` is the closest thing to a universal convention: Codex, Cursor,
+ * Copilot, Gemini CLI, Zed and others look for it at a project root, so a repo
+ * that carries the contract works with agents this setup never learned to
+ * configure. It is the fallback that keeps "memory is automatic" true for
+ * clients there is no writer for — and it travels with the repo, so a
+ * collaborator's agent inherits the habits without installing anything.
+ */
+export const PROJECT_RULES_FILE = 'AGENTS.md';
+
+export interface ProjectRulesResult {
+  path: string;
+  action: 'created' | 'updated' | 'unchanged';
+  backupPath: string | null;
+}
+
+function projectRulesHeader(): string {
+  return [
+    '# Project agent rules',
+    '',
+    '<!-- Managed by aegisx-memory: only the marked block below is rewritten on',
+    '     install. Everything outside the markers is yours and is never touched. -->',
+    '',
+  ].join('\n');
+}
+
+/** Install the memory contract into `<repoDir>/AGENTS.md`. Idempotent, backed up. */
+export function installProjectRules(repoDir: string): ProjectRulesResult {
+  const file = path.join(path.resolve(repoDir), PROJECT_RULES_FILE);
+  const existing = readText(file);
+  if (existing === null || existing.trim() === '') {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${projectRulesHeader()}${memoryRulesBlock()}\n`);
+    return { path: file, action: 'created', backupPath: null };
+  }
+  const updated = upsertRulesBlock(existing, memoryRulesBlock());
+  if (updated === existing) {
+    return { path: file, action: 'unchanged', backupPath: null };
+  }
+  const backupPath = backup(file, existing);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, updated);
+  return { path: file, action: 'updated', backupPath };
+}
+
+/** Human-readable summary line for a project-rules install. */
+export function describeProjectRulesResult(r: ProjectRulesResult): string {
+  switch (r.action) {
+    case 'created':
+      return `✓ project: behavior rules written to ${r.path}`;
+    case 'updated':
+      return `✓ project: behavior rules updated in ${r.path} (backup: ${r.backupPath})`;
+    case 'unchanged':
+      return `✓ project: behavior rules already present in ${r.path}`;
+  }
 }
 
 /* ---------------------------------------------------------------- public API */

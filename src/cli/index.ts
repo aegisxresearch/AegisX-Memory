@@ -11,7 +11,7 @@ import { aegisxHome, dbPath, normalizeRepoPath } from '../core/paths.js';
 import { AegisxError, type KnowledgeKind, type SessionHandoffInput, type SessionSaveSummary } from '../core/types.js';
 import { renderExportMarkdown, renderKnowledgeList, renderRepoSummaries } from './render.js';
 import { binServerConfig, defaultServerConfig, parseAgentArg, renderConfig } from './mcp-config.js';
-import { SETUP_AGENTS, describeResult, describeRulesResult, installForAgent, installRulesForAgent, type SetupAgent } from './auto-setup.js';
+import { SETUP_AGENTS, describeProjectRulesResult, describeResult, describeRulesResult, installForAgent, installProjectRules, installRulesForAgent, type SetupAgent } from './auto-setup.js';
 import { renderDoctorJson, renderDoctorReport, runDoctor, setEngineConstructor } from './doctor.js';
 import { startDashboard } from './dashboard.js';
 import { runSetupWizard } from './setup.js';
@@ -658,7 +658,9 @@ program
     run(async () => {
       const engine = openEngine();
       try {
-        await runSetupWizard(engine);
+        // The wizard also plants the contract in this repo's AGENTS.md, so agents
+        // it has no writer for still get automatic memory.
+        await runSetupWizard(engine, { projectDir: process.cwd() });
       } finally {
         engine.close();
       }
@@ -672,10 +674,18 @@ program
   .option('--bin', 'assume `aegisxmemory` is on PATH (npm link) instead of an absolute node entry', false)
   .option('--install', 'write the registration straight into the agent config(s) — backed up, idempotent, no hand-editing', false)
   .option('--rules', 'also install auto-memory behavior rules (auto recall at session start, auto save at end) into the agent\'s standing instructions', false)
-  .action((opts: { agent: string; bin: boolean; install: boolean; rules: boolean }) => {
+  .option('--project-rules [dir]', 'also write the memory rules into <dir>/AGENTS.md (default: this directory) — the one file most agents read with no per-client setup', false)
+  .action((opts: { agent: string; bin: boolean; install: boolean; rules: boolean; projectRules?: string | boolean }) => {
     run(() => {
       const agent = parseAgentArg(opts.agent);
       const cfg = opts.bin ? binServerConfig() : defaultServerConfig();
+      const wantsProjectRules = opts.projectRules !== undefined && opts.projectRules !== false;
+      // Project rules are agent-agnostic (one shared AGENTS.md), so they are
+      // written on their own request and never inherit --agent.
+      if (wantsProjectRules) {
+        const dir = typeof opts.projectRules === 'string' ? opts.projectRules : process.cwd();
+        process.stdout.write(describeProjectRulesResult(installProjectRules(dir)) + '\n');
+      }
       if (opts.install) {
         const targets = agent === 'all' ? SETUP_AGENTS : [agent as SetupAgent];
         for (const target of targets) {
@@ -689,6 +699,9 @@ program
         process.stdout.write('\nDone. Restart your agent (MCP has no hot reload) — the memory tools load automatically.\n');
         return;
       }
+      // Nothing was asked to be written, so the paste block is the answer. With
+      // --project-rules alone the file *was* the deliverable — stay quiet.
+      if (wantsProjectRules) return;
       process.stdout.write(renderConfig(agent, cfg) + '\n');
     });
   });

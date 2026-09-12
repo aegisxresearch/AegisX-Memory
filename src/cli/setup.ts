@@ -13,14 +13,27 @@
  *  - idempotent: safe to run again any time — it reports what is already done.
  */
 import readline from 'node:readline/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
-import { SETUP_AGENTS, describeResult, describeRulesResult, installForAgent, installRulesForAgent, type SetupAgent } from './auto-setup.js';
+import { SETUP_AGENTS, describeProjectRulesResult, describeResult, describeRulesResult, installForAgent, installProjectRules, installRulesForAgent, type SetupAgent } from './auto-setup.js';
 import { defaultServerConfig } from './mcp-config.js';
 import type { Engine } from '../core/engine.js';
 
 export interface SetupChoice {
   agents: SetupAgent[];
   rules: boolean;
+}
+
+export interface SetupOptions {
+  /**
+   * When set (and rules are on), the same contract is also written into this
+   * project's `AGENTS.md` — the file Codex, Cursor, Copilot, Gemini CLI and
+   * friends read without any per-client setup, so memory stays automatic for
+   * agents this wizard has no writer for. Left undefined by programmatic
+   * callers so a test can never modify a real repository.
+   */
+  projectDir?: string;
 }
 
 const AGENT_LABELS: ReadonlyArray<{ key: string; agent: SetupAgent | 'all'; hint: string }> = [
@@ -89,7 +102,7 @@ async function askUntil(rl: readline.Interface, question: string, resolve: (a: s
 }
 
 /** Run the wizard. `engine` is optional (used to show a final verification line). */
-export async function runSetupWizard(engine?: Engine): Promise<void> {
+export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}): Promise<void> {
   const interactive = input.isTTY === true;
   let choice: SetupChoice;
 
@@ -123,6 +136,15 @@ export async function runSetupWizard(engine?: Engine): Promise<void> {
     if (choice.rules) {
       say(describeRulesResult(installRulesForAgent(agent, {})) + '\n');
     }
+  }
+
+  // The repo-level file is the fallback that reaches agents this wizard has no
+  // writer for. A home directory is the one place it would be noise, so the
+  // write is skipped there rather than scattering rules into `$HOME`.
+  const projectDir = options.projectDir;
+  if (choice.rules && projectDir !== undefined && path.resolve(projectDir) !== path.resolve(os.homedir())) {
+    say(describeProjectRulesResult(installProjectRules(projectDir)) + '\n');
+    say('   (AGENTS.md ikut dibaca agent lain \u2014 Codex, Copilot, Gemini CLI, Zed \u2014 tanpa setup tambahan.)\n');
   }
 
   const names = choice.agents.join(', ');

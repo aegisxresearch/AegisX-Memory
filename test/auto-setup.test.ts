@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { installForAgent, installRulesForAgent, memoryRulesBlock } from '../src/cli/auto-setup.js';
+import { installForAgent, installProjectRules, installRulesForAgent, memoryRulesBlock } from '../src/cli/auto-setup.js';
 import { defaultServerConfig } from '../src/cli/mcp-config.js';
 import { AegisxError } from '../src/core/types.js';
 
@@ -225,5 +226,124 @@ describe('auto-setup — behavior rules (auto memory)', () => {
     expect(block).not.toContain('mcp__');
     expect(block).toContain('recall');
     expect(block).toContain('remember');
+  });
+
+  it('the contract tells the agent how to read a clipped block, not just to recall', () => {
+    const block = memoryRulesBlock();
+    // The coverage line is only useful if the agent knows its vocabulary.
+    expect(block).toContain('complete');
+    expect(block).toContain('(more exist)');
+    expect(block).toContain('budget dropped');
+    expect(block).toContain('in handoff');
+    // An empty store has an action, not just a diagnosis.
+    expect(block).toContain('`index`');
+    // Every kind of note has a home, and notes can be corrected.
+    for (const kind of ['decisions', 'gotchas', 'conventions', 'lesson']) {
+      expect(block).toContain(kind);
+    }
+    expect(block).toContain('knowledge --forget');
+  });
+});
+
+describe('auto-setup — project rules (AGENTS.md)', () => {
+  function projectFile(): string {
+    return path.join(workspace, 'repo', 'AGENTS.md');
+  }
+
+  it('happy: creates AGENTS.md with a managed header and the contract', () => {
+    const result = installProjectRules(path.join(workspace, 'repo'));
+    expect(result.action).toBe('created');
+    expect(result.backupPath).toBeNull();
+    const content = fs.readFileSync(projectFile(), 'utf8');
+    expect(content).toContain('# Project agent rules');
+    expect(content).toContain('aegisx-memory:auto-rules BEGIN');
+    expect(content).toContain('aegisx-memory:auto-rules END');
+    expect(content).toContain('Do not record what the repo already states');
+  });
+
+  it('happy: appends to a repo that already has an AGENTS.md, preserving it and backing up', () => {
+    const file = projectFile();
+    const original = '# My repo rules\n\nRun tests with `make test`.\n';
+    write(file, original);
+    const result = installProjectRules(path.join(workspace, 'repo'));
+    expect(result.action).toBe('updated');
+    const content = fs.readFileSync(file, 'utf8');
+    expect(content).toContain('Run tests with `make test`.');
+    expect(content).toContain('aegisx-memory:auto-rules BEGIN');
+    expect(result.backupPath).toBe(`${file}.aegisx-bak`);
+    expect(fs.readFileSync(result.backupPath as string, 'utf8')).toBe(original);
+  });
+
+  it('idempotent: second run is byte-identical and never duplicates the block', () => {
+    const dir = path.join(workspace, 'repo');
+    installProjectRules(dir);
+    const first = fs.readFileSync(projectFile(), 'utf8');
+    const second = installProjectRules(dir);
+    expect(second.action).toBe('unchanged');
+    expect(second.backupPath).toBeNull();
+    expect(fs.readFileSync(projectFile(), 'utf8')).toBe(first);
+    expect(first.split('aegisx-memory:auto-rules BEGIN').length - 1).toBe(1);
+  });
+
+  it('update: refreshes a stale block in place and keeps the header', () => {
+    const dir = path.join(workspace, 'repo');
+    installProjectRules(dir);
+    const stale = fs.readFileSync(projectFile(), 'utf8').replace('Never store secrets', 'Secrets are fine (stale rule)');
+    fs.writeFileSync(projectFile(), stale);
+    const result = installProjectRules(dir);
+    expect(result.action).toBe('updated');
+    const content = fs.readFileSync(projectFile(), 'utf8');
+    expect(content).not.toContain('stale rule');
+    expect(content).toContain('Never store secrets');
+    expect(content.split('aegisx-memory:auto-rules BEGIN').length - 1).toBe(1);
+  });
+
+  it('negative: a directory named AGENTS.md is an error, not a silent write elsewhere', () => {
+    fs.mkdirSync(projectFile(), { recursive: true });
+    expect(() => installProjectRules(path.join(workspace, 'repo'))).toThrow();
+  });
+});
+
+/**
+ * The flag is user-facing, so it is exercised through the built bundle the way
+ * a user types it; on a checkout with no build the suite skips (node cannot run
+ * the TypeScript sources directly), exactly like the other CLI-level tests.
+ */
+const DIST_ENTRY = path.resolve('dist/cli/index.js');
+const cliSuite = fs.existsSync(DIST_ENTRY) ? describe : describe.skip;
+
+cliSuite('mcp-config --project-rules (built CLI)', () => {
+  function runCli(args: string[], cwd: string): string {
+    return execFileSync(process.execPath, [DIST_ENTRY, ...args], {
+      cwd,
+      encoding: 'utf8',
+      // Never let a test reach the real home, even though this flag writes nothing globally.
+      env: { ...process.env, HERMES_HOME: path.join(workspace, 'HERMES_HOME') },
+    });
+  }
+
+  it('writes AGENTS.md into the named directory, then reports it as already present', () => {
+    const dir = path.join(workspace, 'cli-repo');
+    fs.mkdirSync(dir, { recursive: true });
+    const first = runCli(['mcp-config', '--project-rules', dir], workspace);
+    expect(first).toContain('✓ project: behavior rules written to');
+    const file = path.join(dir, 'AGENTS.md');
+    expect(fs.readFileSync(file, 'utf8')).toContain('aegisx-memory:auto-rules BEGIN');
+    const before = fs.readFileSync(file, 'utf8');
+    const second = runCli(['mcp-config', '--project-rules', dir], workspace);
+    expect(second).toContain('already present');
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('happy: defaults to the current directory when no directory is given', () => {
+    const out = runCli(['mcp-config', '--project-rules'], workspace);
+    expect(out).toContain('✓ project: behavior rules written to');
+    expect(fs.existsSync(path.join(workspace, 'AGENTS.md'))).toBe(true);
+  });
+
+  it('negative: with no action flag it only prints the paste block and writes nothing', () => {
+    const out = runCli(['mcp-config', '--agent', 'claude'], workspace);
+    expect(out).toContain('mcpServers');
+    expect(fs.existsSync(path.join(workspace, 'AGENTS.md'))).toBe(false);
   });
 });
