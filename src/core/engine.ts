@@ -336,11 +336,18 @@ export class Engine {
       throw new AegisxError('user', 'query contains no searchable terms');
     }
 
+    // A recall with no query is a *repo-anchored* recall: this repo's facts and
+    // this repo's knowledge, not an FTS search seeded with the repo path. That
+    // seed matched whenever any other repo's text shared a token with the path
+    // (`~`, a parent directory, a temp prefix), so a repo-scoped recall could
+    // report another project's memory as this one's.
+    const anchored = query === null && repo !== null;
+
     // 1. Workspace-anchored facts always come first.
     const facts = repo !== null
       ? this.store.factsForRepo(repo, 15)
       : [];
-    if (ftsQuery !== null) {
+    if (!anchored && ftsQuery !== null) {
       for (const f of this.store.searchFacts(effectiveQuery, 10)) {
         if (!facts.some((existing) => existing.key === f.key)) {
           facts.push(f);
@@ -348,12 +355,12 @@ export class Engine {
       }
     }
 
-    // 2. FTS-ranked knowledge (decisions/gotchas), scoped to repo when known.
-    //    Without a repo context, rows from non-allowed repos are dropped so a
-    //    global recall cannot leak other projects' knowledge.
-    const knowledge = ftsQuery === null
-      ? (repo !== null ? this.store.knowledgeForRepo(repo, 10) : [])
-      : this.filterAllowedKnowledge(this.store.searchKnowledge(effectiveQuery, repo, 10));
+    // 2. Knowledge (decisions/gotchas): anchored to the repo when there is no
+    //    query, otherwise FTS-ranked and repo-scoped (or allowlist-filtered when
+    //    the recall has no repo, so a global recall cannot leak other projects).
+    const knowledge = !anchored && ftsQuery !== null
+      ? this.filterAllowedKnowledge(this.store.searchKnowledge(effectiveQuery, repo, 10))
+      : (repo !== null ? this.store.knowledgeForRepo(repo, 10) : []);
 
     // 3. Symbols: ranked hits for an explicit query, deterministic top list otherwise.
     const symbols = repo === null

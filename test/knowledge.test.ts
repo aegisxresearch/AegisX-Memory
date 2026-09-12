@@ -232,6 +232,73 @@ describe('knowledge — the save path records handoff decisions', () => {
   });
 });
 
+describe('recall — a query-less recall is repo-anchored, not path-seeded', () => {
+  it('returns this repo\'s own facts and decisions', () => {
+    const engine = new Engine(dbFile);
+    try {
+      engine.remember('project.demo.test-cmd', 'python3 -m pytest -q', repo);
+      engine.saveSession(repo, {
+        goal: 'harden auth',
+        facts: [],
+        decisions: ['keep WAL on for concurrent readers'],
+        nextSteps: [],
+      });
+
+      const result = engine.recall(null, repo);
+      expect(result.facts.map((f) => f.key)).toContain('project.demo.test-cmd');
+      expect(result.knowledge.map((k) => k.body)).toEqual(['keep WAL on for concurrent readers']);
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('does not report another repo\'s facts that name this repo\'s path', () => {
+    const repoA = path.join(workspace, 'alpha');
+    const repoB = path.join(workspace, 'beta');
+    const engine = new Engine(dbFile);
+    try {
+      // Fact search is *not* repo-scoped in SQL, so seeding FTS with alpha's
+      // path (what a query-less recall used to do) matched beta's fact whenever
+      // that fact named the same path — a cross-project answer to a
+      // repo-scoped question.
+      engine.remember('project.beta.compare', `diff against ${repoA} before merging`, repoB);
+      engine.saveSession(repoB, {
+        goal: 'beta work',
+        facts: [],
+        decisions: [`reuse the auth module from ${repoA}`],
+        nextSteps: [],
+      });
+      // sanity: both rows exist, so the assertions below mean something
+      expect(store.countFacts()).toBe(1);
+      expect(store.countKnowledge()).toBe(1);
+
+      const result = engine.recall(null, repoA);
+      // facts are the leak this guards; knowledge was already repo-scoped in SQL
+      expect(result.facts).toEqual([]);
+      expect(result.knowledge).toEqual([]);
+      expect(result.lastSession).toBeUndefined();
+    } finally {
+      engine.close();
+    }
+  });
+
+  it('still ranks this repo\'s knowledge when the recall carries a query', () => {
+    const engine = new Engine(dbFile);
+    try {
+      engine.saveSession(repo, {
+        goal: 'harden auth',
+        facts: [],
+        decisions: ['keep WAL on for concurrent readers'],
+        nextSteps: [],
+      });
+
+      expect(engine.recall('WAL concurrent', repo).knowledge).toHaveLength(1);
+    } finally {
+      engine.close();
+    }
+  });
+});
+
 describe('knowledge — upsert edge cases', () => {
   it('re-recording identical content is a no-op, so recency never churns', async () => {
     const first = store.saveKnowledge(repo, 'lesson', 'no AST in v1', 'regex is enough', ['src/indexer']);
