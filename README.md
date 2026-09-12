@@ -115,12 +115,21 @@ curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/i
 
 What it does:
 
-1. clones this repo to `~/.aegisx-app`
-2. installs dependencies (`npm ci`) and builds the TypeScript bundle
+1. fetches the newest revision of `main` into `~/.aegisx-app`
+2. installs dependencies (`npm ci`, falling back to `npm install`) and builds the TypeScript bundle
 3. symlinks the `aegisxmemory` CLI into `~/.local/bin` (adds to PATH if missing)
 4. runs `aegisxmemory init` to create `~/.aegisx`
+5. **prints the version and the commit it installed**, so "did I get the newest one?" needs no second command
 
-Re-running the same line **updates** an existing install (fetch + reset to origin/main, then rebuild).
+Re-running the same line **updates** an existing install (fetch + reset onto the fetched revision, then rebuild), which is also the upgrade path. A fresh or `--force` install is built in a staging directory and swapped in **only after it builds**, so a network hiccup during `npm ci` cannot leave you with no CLI.
+
+```bash
+# install a specific branch or tag instead of main
+curl -fsSL .../install.sh | sh -s -- --ref v1.0.0
+
+# see every option (--ref, --dir, --bin, --force, --no-init, --no-path)
+curl -fsSL .../install.sh | sh -s -- --help
+```
 
 ### Option B — npm straight from GitHub
 

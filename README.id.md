@@ -115,12 +115,21 @@ curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/i
 
 Yang dilakukannya:
 
-1. clone repo ini ke `~/.aegisx-app`
-2. pasang dependensi (`npm ci`) dan build bundle TypeScript
+1. mengambil revisi terbaru dari `main` ke `~/.aegisx-app`
+2. pasang dependensi (`npm ci`, dengan fallback `npm install`) lalu build bundle TypeScript
 3. symlink CLI `aegisxmemory` ke `~/.local/bin` (ditambahkan ke PATH bila belum ada)
 4. jalankan `aegisxmemory init` untuk membuat `~/.aegisx`
+5. **mencetak versi dan commit yang baru dipasang**, jadi pertanyaan “saya dapat yang terbaru atau bukan?” tidak perlu perintah kedua
 
-Menjalankan baris yang sama lagi berarti **update** instalasi yang ada (fetch + reset ke origin/main, lalu build ulang).
+Menjalankan baris yang sama lagi berarti **update** instalasi yang ada (fetch + reset ke revisi yang diambil, lalu build ulang) — itulah jalur upgrade-nya. Instalasi baru atau `--force` dibangun di direktori staging dan baru **ditukar setelah build-nya berhasil**, jadi gangguan jaringan saat `npm ci` tidak akan meninggalkan Anda tanpa CLI.
+
+```bash
+# pasang cabang atau tag tertentu, bukan main
+curl -fsSL .../install.sh | sh -s -- --ref v1.0.0
+
+# lihat semua opsi (--ref, --dir, --bin, --force, --no-init, --no-path)
+curl -fsSL .../install.sh | sh -s -- --help
+```
 
 ### Opsi B — npm langsung dari GitHub
 
