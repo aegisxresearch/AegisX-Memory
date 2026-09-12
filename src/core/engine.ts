@@ -222,22 +222,24 @@ export class Engine {
    * structural relations (belongs-to / learned-from / summarizes).
    */
   graphData(): {
-    nodes: Array<{ id: string; kind: 'repo' | 'fact' | 'knowledge' | 'session'; label: string; sub: string | null }>
+    nodes: Array<{ id: string; kind: 'repo' | 'fact' | 'knowledge' | 'session'; label: string; sub: string | null; repo: string | null }>
     edges: Array<{ source: string; target: string; label: string }>
   } {
-    const nodes: Array<{ id: string; kind: 'repo' | 'fact' | 'knowledge' | 'session'; label: string; sub: string | null }> = [];
+    const nodes: Array<{ id: string; kind: 'repo' | 'fact' | 'knowledge' | 'session'; label: string; sub: string | null; repo: string | null }> = [];
     const edges: Array<{ source: string; label: string; target: string }> = [];
     const ensureRepo = (repo: string): string => {
       const id = `repo:${repo}`;
       if (!nodes.some((n) => n.id === id)) {
-        nodes.push({ id, kind: 'repo', label: repo.split('/').pop() || repo, sub: repo });
+        nodes.push({ id, kind: 'repo', label: repo.split('/').pop() || repo, sub: repo, repo });
       }
       return id;
     };
 
     for (const f of this.store.listFacts(60)) {
       const fid = `fact:${f.key}`;
-      nodes.push({ id: fid, kind: 'fact', label: f.key, sub: f.value });
+      // `repo` is carried on the node itself (not only as an edge) so the
+      // dashboard's detail panel can name the repository without walking links.
+      nodes.push({ id: fid, kind: 'fact', label: f.key, sub: f.value, repo: f.repoHint });
       if (f.repoHint !== null) {
         const rid = ensureRepo(f.repoHint);
         edges.push({ source: fid, target: rid, label: 'belongs to' });
@@ -247,7 +249,7 @@ export class Engine {
     knowledge.forEach((k, i) => {
       if (k.repo === undefined) return; // defensive: store always sets it on reads
       const kid = `know:${i}`;
-      nodes.push({ id: kid, kind: 'knowledge', label: `${k.kind}: ${k.title}`, sub: k.body });
+      nodes.push({ id: kid, kind: 'knowledge', label: `${k.kind}: ${k.title}`, sub: k.body, repo: k.repo });
       const rid = ensureRepo(k.repo);
       edges.push({ source: kid, target: rid, label: 'learned in' });
     });
@@ -258,6 +260,7 @@ export class Engine {
         kind: 'session',
         label: s.goal,
         sub: `${s.facts} facts · ${s.decisions} decisions · ${s.gotchas} gotchas · ${s.conventions} conventions`,
+        repo: s.repo,
       });
       const rid = ensureRepo(s.repo);
       edges.push({ source: sid, target: rid, label: 'summarizes' });
