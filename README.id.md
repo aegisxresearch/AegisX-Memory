@@ -283,6 +283,10 @@ Setelah memasang rules, **restart agent**. Mulai saat itu Anda tinggal bekerja �
 
 Semua perintah yang berbasis repo memakai **direktori kerja saat ini** — `cd` dulu ke foldernya. Memori di-namespace per path: project A dan project B tidak pernah bercampur.
 
+Berikut seluruh loop-nya dalam satu rekaman — index sekali, lalu satu panggilan recall mengembalikan peta kode, fakta yang di-pin, dan handoff terakhir:
+
+![Loop memori: index → remember → save handoff → satu panggilan recall](docs/assets/memory-loop.gif)
+
 ### 7.1 Kalau agent sudah terhubung (kondisi normal)
 
 Dengan `--rules` terpasang, ini terjadi **dengan sendirinya** — Anda tidak perlu memintanya. Frasa-frasa di bawah hanyalah yang *bisa* Anda ucapkan kalau mau mengarahkan:
@@ -600,6 +604,8 @@ npm run build       # hasilkan dist/
 CI (`.github/workflows/ci.yml`) menjalankan typecheck, build, seluruh test suite, dan gate doctor di setiap push dan PR. Gerbang kualitas ganda: strict typing tanpa placeholder, dan setiap fitur lahir dengan test happy path plus test edge case negatif.
 
 Stack: TypeScript (strict, ESM) · better-sqlite3 (WAL + FTS5) · commander · chokidar · yaml · MCP SDK resmi.
+
+GIF demo di README ini direkam dari eksekusi CLI sungguhan, bukan animasi buatan — perbarui salah satunya setelah mengubah output CLI dengan `bash docs/assets/regenerate.sh setup` atau `bash docs/assets/regenerate.sh memory-loop` (perlu `npm run build` dan `agg` dari asciinema di `PATH`).
 
 Dokumen desain — batas komponen, aliran data, matriks STRIDE, dan log amandemen bernomor — ada di [`RFC.md`](RFC.md). Panduan integrasi Hermes: [`docs/HERMES.md`](docs/HERMES.md).
 

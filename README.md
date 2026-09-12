@@ -283,6 +283,10 @@ After installing rules, **restart the agent**. From then on you just work — th
 
 Everything repo-aware uses the **current working directory** — `cd` into the project first. Memory is namespaced per path: project A and project B never bleed into each other.
 
+Here is the whole loop in one take — index once, then a single recall call brings back the code map, the pinned facts and the last handoff:
+
+![The memory loop: index → remember → save handoff → one recall call](docs/assets/memory-loop.gif)
+
 ### 7.1 If your agent is connected (the normal case)
 
 With `--rules` installed this happens **by itself** — you do not have to ask. These phrases are just what you *can* say if you want to nudge it:
@@ -600,6 +604,8 @@ npm run build       # emit dist/
 CI (`.github/workflows/ci.yml`) runs typecheck, build, the full test suite, and a doctor gate on every push and PR. The dual quality gate: strict typing with zero placeholders, and every feature ships with a happy-path test plus negative edge-case tests.
 
 Stack: TypeScript (strict, ESM) · better-sqlite3 (WAL + FTS5) · commander · chokidar · yaml · official MCP SDK.
+
+The demo GIFs in this README are recorded from real CLI runs, never mocked — refresh one after changing CLI output with `bash docs/assets/regenerate.sh setup` or `bash docs/assets/regenerate.sh memory-loop` (needs a fresh `npm run build` and asciinema's `agg` on `PATH`).
 
 The design doc — component boundaries, data flow, STRIDE matrix, and numbered amendments — lives in [`RFC.md`](RFC.md). The Hermes integration walkthrough is [`docs/HERMES.md`](docs/HERMES.md).
 
