@@ -483,10 +483,12 @@ Handoff adalah yang membuat sesi *berikutnya* hangat. Kirim lewat stdin (`save -
 
 - `goal` — satu kalimat.
 - `facts` — hal-hal yang terverifikasi selama sesi (baris error test yang gagal, perintah yang mereproduksi bug). Bukan opini.
-- `decisions` — entri "kami pilih X daripada Y karena Z".
+- `decisions` — entri "kami pilih X daripada Y karena Z". Setiap entri **juga tersimpan sebagai entri knowledge**, di-upsert berdasarkan kalimatnya, jadi tetap bisa ditemukan di sesi berikutnya dan tidak hanya hidup di dalam handoff tempat ia ditulis; `save` melaporkan berapa yang baru (`2 decisions recorded`) dan berapa yang sudah diketahui.
 - `nextSteps` — langkah konkret yang bisa dikerjakan; daftar tugas sesi berikutnya.
 
 `resume` mencetak handoff terakhir ditambah fakta, knowledge, dan simbol milik repo itu — semua yang agent butuhkan untuk melanjutkan tanpa membaca ulang codebase.
+
+> **Meng-upgrade instalasi yang sudah ada?** Keputusan pada handoff yang Anda simpan *sebelum* perilaku ini ada akan dilipat ke knowledge store satu kali, pada perintah berikutnya yang membuka database — kalimat yang berulang di beberapa handoff menjadi satu entri, dan apa pun yang tampak seperti kredensial dilewati, bukan diterbitkan ulang. Ini terjadi sekali per database; `aegisxmemory doctor` melaporkannya (`knowledge backfill: 3 entries from 3 old handoffs`), dan `aegisxmemory stats` akan menunjukkan angka knowledge naik.
 
 ## 12. Observability & live index
 

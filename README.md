@@ -483,10 +483,12 @@ The handoff is what makes the *next* session warm. Pipe it via stdin (`save --js
 
 - `goal` — one sentence.
 - `facts` — things verified during the session (a failing test's error line, the command that reproduced a bug). Not opinions.
-- `decisions` — the "we chose X over Y because Z" entries.
+- `decisions` — the "we chose X over Y because Z" entries. Each one is **also stored as a knowledge entry**, upserted by its sentence, so it stays findable in later sessions instead of living only inside the handoff it was written in; `save` reports how many were new (`2 decisions recorded`) and how many were already known.
 - `nextSteps` — concrete, actionable items; the next session's to-do list.
 
 `resume` prints the last handoff plus the repo's facts, knowledge, and symbols — everything an agent needs to continue without re-reading the codebase.
+
+> **Upgrading an existing install?** The decisions in handoffs you saved *before* this behaviour existed are folded into the knowledge store once, on the next command that opens the database — a sentence repeated across handoffs collapses into a single entry, and anything that looks like a credential is skipped rather than re-published. It happens once per database; `aegisxmemory doctor` reports it (`knowledge backfill: 3 entries from 3 old handoffs`), and `aegisxmemory stats` will show the knowledge count jump.
 
 ## 12. Observability & live index
 
