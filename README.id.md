@@ -8,7 +8,7 @@
 
 **English** | **Bahasa Indonesia** (dokumen ini) — versi Inggris adalah acuan bila ada perbedaan.
 
-Setiap sesi baru AI agent menjelajahi ulang repo Anda: arsitektur, keputusan, jebakan, perintah test — dipelajari dari nol, setiap saat. AegisX-Memory memperbaiki ini dengan **lapisan memori lokal tanpa cloud** yang menyuntikkan *hanya konteks yang relevan* di awal sesi, di bawah batas token yang ketat.
+Setiap sesi baru AI agent menjelajahi ulang repo Anda: arsitektur, keputusan, jebakan, perintah test — dipelajari dari nol, setiap saat. AegisX-Memory memperbaiki ini dengan **lapisan memori lokal tanpa cloud** yang menyuntikkan *hanya konteks yang relevan* di awal sesi, dalam batas token yang dinyatakannya secara jujur di akhir setiap blok.
 
 - 🧠 **Mengingat** — fakta, keputusan, jebakan (gotcha), handoff sesi, struktur kode
 - ⚡ **Cepat** — ~1rb file terindeks dalam <10 detik; re-scan <200 ms
@@ -101,7 +101,9 @@ Tiga store di bawah satu database SQLite (`~/.aegisx/memory.sqlite`, WAL + FTS5)
 
 **Invalidasi berbasis hash, bukan timestamp.** Pengetahuan kode dikunci ke hash SHA-256 isi file. Begitu file berubah, memorinya yang basi langsung hilang. Nol jawaban basi, nol heuristik.
 
-**Recall beranggaran.** Satu recall merangkai, dalam batas token yang ketat (default 2.000): fakta repo ini → keputusan, gotcha, dan konvensi repo ini → simbol → handoff terakhir → ringkasan struktur. Beri query dan lapisan knowledge serta simbol berubah dari ter-anchor menjadi berperingkat FTS; tanpa query, tidak ada memori repo lain yang bisa ikut tertarik. Catatan yang sudah dicetak ulang handoff terakhir disajikan sekali, dari handoff itu — bukan dua kali. Kalau kelebihan, item prioritas terendah yang dibuang lebih dulu — tidak pernah di tengah fakta.
+**Recall beranggaran.** Satu recall merangkai menuju batas token (default 2.000): fakta repo ini → keputusan, gotcha, dan konvensi repo ini → simbol → handoff terakhir → ringkasan struktur. Beri query dan lapisan knowledge serta simbol berubah dari ter-anchor menjadi berperingkat FTS; tanpa query, tidak ada memori repo lain yang bisa ikut tertarik. Kalau kelebihan, item prioritas terendah yang dibuang lebih dulu — tidak pernah di tengah fakta — sampai ke lantai (≥3 fakta, ≥1 catatan, ≥5 simbol, plus ringkasan struktur), jadi **batas itu target, bukan plafon**: pada budget sangat kecil, lantai yang menang dan bloknya kembali lebih besar dari yang diminta. `recall --full` melewati batas jumlah dan pemangkasan sepenuhnya. Catatan yang sudah dicetak ulang handoff terakhir disajikan sekali, dari handoff itu — bukan dua kali.
+
+**Setiap blok diakhiri pernyataan apa yang tidak dimuat** — `<!-- recall: complete — 12 facts · 3 knowledge · 8 symbols · 527 tokens (budget 2000) -->`, atau pada blok yang terpotong `<!-- recall: facts 15 (more exist) · knowledge 0 · 3 in handoff · budget dropped 12 facts · 135 of 40 tokens -->`. Sebelumnya penandanya hanya `<!-- tokens≈N -->`, sehingga blok yang membuang dua belas fakta tampak identik dengan blok yang tidak punya apa-apa untuk dibuang. `--json` membawa pernyataan yang sama sebagai field terstruktur (`coverage`).
 
 ## 3. Instalasi
 
@@ -401,7 +403,7 @@ Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membuka
 |---|---|
 | `aegisxmemory init` | buat memori home + DB, cetak hint setup |
 | `aegisxmemory index [path]` | scan hash penuh/inkremental atas sebuah repo |
-| `aegisxmemory recall [query] [--budget n]` | blok konteks beranggaran (markdown) |
+| `aegisxmemory recall [query] [--budget n] [--full]` | blok konteks (markdown) yang diakhiri baris cakupan; `--full` melewati batas jumlah dan pemangkasan |
 | `aegisxmemory remember <key> <value>` | pin fakta stabil |
 | `aegisxmemory forget <key>` | hapus fakta (beserta nilai-nilai lamanya) |
 | `aegisxmemory history [key]` | nilai lama sebuah fakta (linimasa nilai yang sudah digantikan) |
@@ -671,6 +673,20 @@ AegisX-Memory sudah melalui pemodelan ancaman STRIDE (lihat `RFC.md` §5) dan di
 - **Guard DoS**: penolakan symlink, batas kedalaman 64, batas 512 KB/file, batas 50rb file dengan abort eksplisit; batas body HTTP 1 MB dengan 413.
 - **Uninstall** = `rm -rf ~/.aegisx` — tanpa residu.
 
+### 15.1 Guard secret pre-push (untuk repository ini)
+
+`scripts/pre-push` memblokir push yang baris tambahannya tampak seperti kredensial (token GitHub, kunci AWS, private key PEM, bearer token Freebuff). Ia disertakan di dalam repo karena template hook tingkat mesin yang melakukan tugas sama punya lubang senyap: `grep -E "$pattern"` membaca pola yang diawali `-----BEGIN` sebagai **opsi**, sehingga grep keluar dengan kode 2, tidak mencocokkan apa pun, dan pemeriksaan PEM lolos tepat pada kebocoran yang ia ada untuk mencegahnya. Sekarang setiap pola lewat `grep -E -e`, dan push pertama yang belum punya pembanding mengatakannya alih-alih melaporkan sukses.
+
+```bash
+cp scripts/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+# …atau jadikan repo ini guard untuk semua klon Anda:
+git config --global core.hooksPath "$PWD/scripts"
+```
+
+Diuji dua arah: commit yang menambahkan header PEM ditolak dengan exit 1, commit bersih lolos dengan exit 0. Baris yang cocok tidak pernah dicetak — mencetaknya berarti menyalin secret itu ke terminal dan ke log CI mana pun.
+
+> Hook itu pagar pengaman, bukan pemindai. Ia hanya memeriksa baris yang ditambahkan sebuah push; perlindungan sesungguhnya adalah proyek ini tidak pernah menyimpan secret sejak awal (`remember`/`save` menolaknya, dan `.env*`/`*.pem`/`*.key` tidak pernah di-index).
+
 ## 16. Troubleshooting
 
 <details>
@@ -763,7 +779,7 @@ CLI / MCP ──► Engine ──► FactStore ─┐
 - **Indexer** (`src/indexer/`) — walk repositori berbasis hash-diff; mengekstrak simbol/TODO dengan extractor per bahasa. Deklarasi yang dikenali: JS/TS, Python, Ruby (`def`), Go (`func`, `type`), Rust (`fn`, `mod`, `struct`, `impl`, `trait`), Java, C#, Kotlin (`class`, `interface`, `enum`, `record`, `object`, `namespace`, `union`) dan fungsi bergaya C/C++ (`int main(`, `std::string name(`) — hanya deklarasi di kolom 0, jadi anggota yang di-indent tidak masuk indeks.
 - **Secrets** (`src/core/secrets.ts`) — detector secret tunggal yang dipakai semua jalur tulis.
 
-Komposisi recall, dalam batas token yang ketat: fakta milik repo → knowledge milik repo (berperingkat FTS dan dibatasi repo bila recall membawa query) → simbol (diperingkat query, daftar teratas deterministik bila tanpa query) → handoff terakhir → ringkasan struktur. Recall tanpa query ter-anchor sepenuhnya dan tidak pernah mencari fakta repo lain. Catatan yang sudah dicetak ulang handoff terakhir dibuang dari lapisan knowledge, jadi satu kalimat tercetak sekali — dari handoff selama handoff itu yang terbaru, dari knowledge setelah handoff berikutnya mengambil tempatnya. Kelebihan membuang item prioritas terendah lebih dulu — tidak pernah di tengah fakta.
+Komposisi recall, menuju batas token (default 2.000; target, bukan plafon — loop pemangkasannya punya lantai): fakta milik repo → knowledge milik repo (berperingkat FTS dan dibatasi repo bila recall membawa query) → simbol (diperingkat query, daftar teratas deterministik bila tanpa query) → handoff terakhir → ringkasan struktur. Recall tanpa query ter-anchor sepenuhnya dan tidak pernah mencari fakta repo lain. Catatan yang sudah dicetak ulang handoff terakhir dibuang dari lapisan knowledge, jadi satu kalimat tercetak sekali — dari handoff selama handoff itu yang terbaru, dari knowledge setelah handoff berikutnya mengambil tempatnya. Kelebihan membuang item prioritas terendah lebih dulu — tidak pernah di tengah fakta — dan komentar cakupan di akhir menyebut apa yang dibuang, apa yang masih ada di store, dan apa yang pindah ke handoff.
 
 ## 20. Roadmap
 

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Pre-push secret guard — blocks a push whose added lines look like a credential.
+#
+# Install it once per clone:
+#
+#   cp scripts/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+#
+# or point git at this directory (affects every repo, and then this file *is*
+# the guard, so there is no copy to go stale):
+#
+#   git config --global core.hooksPath "$PWD/scripts"
+#
+# Why the `-e` below is load-bearing: `grep -E "$pattern"` reads a pattern that
+# begins with `-----BEGIN` as an *option*. grep then exits 2, matches nothing,
+# and the PEM check silently passes on exactly the leak it was written for. The
+# machine-level template shipped with that bug; this copy does not.
+#
+# Bypass deliberately, knowing what you are doing: git push --no-verify
+set -uo pipefail
+
+# Compare against the remote we are pushing to. A first push has no such ref, and
+# saying so beats a guard that reports success because it never looked.
+BASE=""
+for candidate in origin/main origin/HEAD; do
+  if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+    BASE="$candidate"
+    break
+  fi
+done
+
+ADDED=""
+if [ -n "$BASE" ]; then
+  ADDED=$(git diff "$BASE"..HEAD 2>/dev/null | grep -E '^\+' || true)
+else
+  echo "note: no origin ref to compare against yet — the secret guard is NOT checking this push" >&2
+fi
+
+LEAKS=0
+check_pattern() {
+  local pattern="$1"
+  local desc="$2"
+  local matches
+  matches=$(printf '%s\n' "$ADDED" | grep -E -e "$pattern" || true)
+  if [ -n "$matches" ]; then
+    # The matching line is deliberately not printed: echoing it would copy the
+    # secret into the terminal, the scrollback buffer and any CI log.
+    printf '\033[0;31m[CRITICAL LEAK DETECTED] %s\033[0m\n' "$desc" >&2
+    LEAKS=$((LEAKS + 1))
+  fi
+}
+
+check_pattern '(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})' 'GitHub Personal Access Token'
+check_pattern '(AKIA[0-9A-Z]{16})' 'AWS Access Key ID'
+check_pattern '-----BEGIN (RSA|EC|OPENSSH|DSA) PRIVATE KEY-----' 'Private Key / PEM Certificate'
+check_pattern 'manicode-[A-Za-z0-9]{32,}' 'Freebuff / Manicode Auth Bearer Token'
+
+if [ "$LEAKS" -gt 0 ]; then
+  printf '\033[0;31m\033[1m❌ push dibatalkan: %s potensi secret terdeteksi di commit yang dikirim.\033[0m\n' "$LEAKS" >&2
+  printf '   Cabut kredensial itu, hapus dari commit, lalu push lagi.\n' >&2
+  exit 1
+fi
+exit 0

@@ -12,9 +12,13 @@ import { normalizeRepoPath, parseAllowedRepos, assertRepoAllowed } from './paths
 import { Store, ftsEscape, knowledgeTitle, KNOWLEDGE_BACKFILL_META } from './store.js';
 import { Indexer, isSecretBearingFile } from '../indexer/indexer.js';
 import { containsSecret } from './secrets.js';
-import { AegisxError, type FactHistoryEntry, type KnowledgeKind, type KnowledgeRecord, type MemoryExport, type MemoryFact, type ObservabilityStats, type RecallResult, type RepoMemory, type RepoSummary, type ScanStats, type SessionHandoff, type SessionHandoffInput, type SessionSaveSummary } from './types.js';
+import { AegisxError, type FactHistoryEntry, type KnowledgeKind, type KnowledgeRecord, type MemoryExport, type MemoryFact, type ObservabilityStats, type RecallCoverage, type RecallResult, type RepoMemory, type RepoSummary, type ScanStats, type SessionHandoff, type SessionHandoffInput, type SessionSaveSummary } from './types.js';
 
 export const DEFAULT_TOKEN_BUDGET = 2_000;
+/** Per-layer cap for a `--full` recall — everything the store holds, up to a
+ *  bound that keeps one pathological repository from filling the context. The
+ *  coverage report still says when even this was not enough. */
+export const FULL_LAYER_LIMIT = 500;
 /** Per-store row cap for `export` — a local store is small, and a whole-table
  *  load is the one thing that is not. The dump reports the cap so a truncated
  *  list is visible rather than silent. */
@@ -523,7 +527,15 @@ export class Engine {
       : this.store.pruneOldTelemetry(maxAgeMs);
   }
 
-  recall(query: string | null, repoAbsPath: string | null, budgetTokens = DEFAULT_TOKEN_BUDGET): RecallResult {
+  recall(
+    query: string | null,
+    repoAbsPath: string | null,
+    budgetTokens = DEFAULT_TOKEN_BUDGET,
+    options: { full?: boolean } = {},
+  ): RecallResult {
+    // `full` is the escape hatch: no count caps and no budget trim, for a review
+    // or a fresh repository where the caller wants the whole store, not a window.
+    const full = options.full === true;
     const repo = repoAbsPath === null ? null : normalizeRepoPath(repoAbsPath);
     if (repo !== null) {
       this.guardRepo(repo);
@@ -545,10 +557,19 @@ export class Engine {
     // report another project's memory as this one's.
     const anchored = query === null && repo !== null;
 
+    // Per-layer caps. A recall that is allowed to cut has to say when it did,
+    // so each layer is fetched **one row past its cap**: the extra row is the
+    // proof that the store holds more, and it costs one row's work.
+    const FACT_LIMIT = full ? FULL_LAYER_LIMIT : 15;
+    const KNOWLEDGE_LIMIT = full ? FULL_LAYER_LIMIT : 10;
+    const SYMBOL_LIMIT = full ? FULL_LAYER_LIMIT : 15;
+
     // 1. Workspace-anchored facts always come first.
-    const facts = repo !== null
-      ? this.store.factsForRepo(repo, 15)
+    const factsRaw = repo !== null
+      ? this.store.factsForRepo(repo, FACT_LIMIT + 1)
       : [];
+    const factsTruncated = factsRaw.length > FACT_LIMIT;
+    const facts = factsRaw.slice(0, FACT_LIMIT);
     if (!anchored && ftsQuery !== null) {
       for (const f of this.store.searchFacts(effectiveQuery, 10)) {
         if (!facts.some((existing) => existing.key === f.key)) {
@@ -560,16 +581,22 @@ export class Engine {
     // 2. Knowledge (decisions/gotchas): anchored to the repo when there is no
     //    query, otherwise FTS-ranked and repo-scoped (or allowlist-filtered when
     //    the recall has no repo, so a global recall cannot leak other projects).
-    const rankedKnowledge = !anchored && ftsQuery !== null
-      ? this.filterAllowedKnowledge(this.store.searchKnowledge(effectiveQuery, repo, 10))
-      : (repo !== null ? this.store.knowledgeForRepo(repo, 10) : []);
+    const rankedKnowledgeRaw = !anchored && ftsQuery !== null
+      ? this.filterAllowedKnowledge(this.store.searchKnowledge(effectiveQuery, repo, KNOWLEDGE_LIMIT + 1))
+      : (repo !== null ? this.store.knowledgeForRepo(repo, KNOWLEDGE_LIMIT + 1) : []);
+    // The allowlist filter can remove the probe row, which under-reports rather
+    // than claiming a truncation that is not there — the safe direction.
+    const knowledgeTruncated = rankedKnowledgeRaw.length > KNOWLEDGE_LIMIT;
+    const rankedKnowledge = rankedKnowledgeRaw.slice(0, KNOWLEDGE_LIMIT);
 
     // 3. Symbols: ranked hits for an explicit query, deterministic top list otherwise.
-    const symbols = repo === null
+    const symbolsRaw = repo === null
       ? []
       : query !== null && ftsQuery !== null
-        ? this.indexer.searchSymbols(effectiveQuery, repo, 15)
-        : this.indexer.topSymbols(repo, 15);
+        ? this.indexer.searchSymbols(effectiveQuery, repo, SYMBOL_LIMIT + 1)
+        : this.indexer.topSymbols(repo, SYMBOL_LIMIT + 1);
+    const symbolsTruncated = symbolsRaw.length > SYMBOL_LIMIT;
+    const symbols = symbolsRaw.slice(0, SYMBOL_LIMIT);
 
     // 4. Last session handoff for this repo.
     const lastSession = repo !== null ? this.store.lastSession(repo) : undefined;
@@ -588,21 +615,41 @@ export class Engine {
     const brief = repo !== null ? this.indexer.buildBrief(repo) : '';
 
     // Budget: drop lowest-priority items until under budget, never mid-fact.
+    // `full` skips this entirely — that is what --full is for.
+    const dropped = { facts: 0, knowledge: 0, symbols: 0 };
     let tokenEstimate = estimateTokens(brief, facts, knowledge, symbols, lastSession);
-    while (tokenEstimate > budgetTokens) {
+    while (!full && tokenEstimate > budgetTokens) {
       if (symbols.length > 5) {
         symbols.pop();
+        dropped.symbols += 1;
       } else if (facts.length > 3) {
         facts.pop();
+        dropped.facts += 1;
       } else if (knowledge.length > 1) {
         knowledge.pop();
+        dropped.knowledge += 1;
       } else {
-        break; // floor reached: brief + minimal core stay
+        break; // floor reached: brief + minimal core stay, budget may be exceeded
       }
       tokenEstimate = estimateTokens(brief, facts, knowledge, symbols, lastSession);
     }
 
-    const result: RecallResult = { brief, facts, symbols, knowledge, lastSession, tokenEstimate };
+    const coverage: RecallCoverage = {
+      budget: budgetTokens,
+      tokens: tokenEstimate,
+      dropped,
+      truncated: { facts: factsTruncated, knowledge: knowledgeTruncated, symbols: symbolsTruncated },
+      inHandoff: rankedKnowledge.length - knowledge.length,
+      complete:
+        dropped.facts === 0 &&
+        dropped.knowledge === 0 &&
+        dropped.symbols === 0 &&
+        !factsTruncated &&
+        !knowledgeTruncated &&
+        !symbolsTruncated,
+    };
+
+    const result: RecallResult = { brief, facts, symbols, knowledge, lastSession, tokenEstimate, coverage };
     // Telemetry: record every recall (hit = any facts/symbols/knowledge/session returned)
     try {
       const hit =
@@ -672,10 +719,43 @@ export class Engine {
         parts.push('Next steps:\n' + result.lastSession.nextSteps.map((x) => `- ${x}`).join('\n'));
       }
     }
-    parts.push(`<!-- tokens≈${result.tokenEstimate} -->`);
+    parts.push(recallCoverageComment(result));
     parts.push('<!-- AEGISX-MEMORY:END -->');
     return parts.join('\n');
   }
+}
+
+/**
+ * The one-line coverage statement that closes every recall block.
+ *
+ * A machine comment, not prose: it costs the agent a handful of tokens and
+ * answers the question the old `<!-- tokens≈527 -->` left open — *was anything
+ * left out?* An intact block says so in one clause; a clipped one names the
+ * layer, whether the store held more, and how much the budget removed.
+ */
+function recallCoverageComment(result: RecallResult): string {
+  const { coverage: c } = result;
+  // The short form is only for a block with nothing to explain. A recall whose
+  // knowledge layer is empty because the handoff reprints it is complete — it
+  // lost nothing — but the reader still deserves to know where the notes went.
+  if (c.complete && c.inHandoff === 0) {
+    return `<!-- recall: complete — ${result.facts.length} facts · ${result.knowledge.length} knowledge · ` +
+      `${result.symbols.length} symbols · ${c.tokens} tokens (budget ${c.budget}) -->`;
+  }
+  const bits: string[] = [
+    `facts ${result.facts.length}${c.truncated.facts ? ' (more exist)' : ''}`,
+    `knowledge ${result.knowledge.length}${c.truncated.knowledge ? ' (more exist)' : ''}`,
+    `symbols ${result.symbols.length}${c.truncated.symbols ? ' (more exist)' : ''}`,
+  ];
+  // Withheld is not dropped: these are served by the handoff below.
+  if (c.inHandoff > 0) {
+    bits.push(`${c.inHandoff} in handoff`);
+  }
+  const dropped = c.dropped.facts + c.dropped.knowledge + c.dropped.symbols;
+  if (dropped > 0) {
+    bits.push(`budget dropped ${c.dropped.facts} facts / ${c.dropped.knowledge} knowledge / ${c.dropped.symbols} symbols`);
+  }
+  return `<!-- recall: ${bits.join(' · ')} · ${c.tokens} of ${c.budget} tokens -->`;
 }
 
 /** Human-readable suffix for a save, e.g. " — 3 notes recorded". Empty when the

@@ -282,3 +282,96 @@ describe('Gate 2 — invalidation correctness', () => {
     }
   });
 });
+
+/**
+ * The cut used to be silent: a recall that dropped facts looked exactly like one
+ * that had nothing to drop. `coverage` is that statement, and it must be right
+ * in both directions — a clip has to be named, and an intact block must not
+ * claim one.
+ */
+describe('recall coverage — a cut is stated, never implied', () => {
+  it('a block with nothing left out says so in one clause', () => {
+    writeRepoFile('src/a.ts', 'export function one() {}\n');
+    engine.remember('k1', 'value one', repoDir);
+    engine.indexRepo(repoDir);
+
+    const result = engine.recall(null, repoDir);
+    expect(result.coverage.complete).toBe(true);
+    expect(result.coverage.dropped).toEqual({ facts: 0, knowledge: 0, symbols: 0 });
+    expect(result.coverage.truncated).toEqual({ facts: false, knowledge: false, symbols: false });
+    expect(engine.renderMarkdown(result)).toContain('<!-- recall: complete — 1 facts');
+  });
+
+  it('a layer that overflowed its cap is named, and the extra probe row is not returned', () => {
+    for (let i = 1; i <= 20; i++) {
+      engine.remember(`k${i}`, `value ${i}`, repoDir);
+    }
+    engine.indexRepo(repoDir);
+
+    const result = engine.recall(null, repoDir);
+    // The cap is unchanged: the probe row proves there is more, it is not served.
+    expect(result.facts).toHaveLength(15);
+    expect(result.coverage.truncated.facts).toBe(true);
+    expect(result.coverage.complete).toBe(false);
+    const md = engine.renderMarkdown(result);
+    expect(md).toContain('facts 15 (more exist)');
+    // Hitting a cap is not the budget's doing, and the line must not blame it.
+    expect(md).not.toContain('budget dropped');
+  });
+
+  it('notes the handoff reprints are reported as in-handoff, not as a loss', () => {
+    engine.saveSession(repoDir, {
+      goal: 'ship it',
+      facts: [],
+      decisions: ['pick sqlite over postgres'],
+      gotchas: ['port 5000 is taken'],
+      conventions: [],
+      nextSteps: [],
+    });
+
+    const result = engine.recall(null, repoDir);
+    expect(result.knowledge).toHaveLength(0); // the handoff carries them instead
+    expect(result.coverage.inHandoff).toBe(2);
+    expect(result.coverage.dropped.knowledge).toBe(0); // withheld is not dropped
+    expect(engine.renderMarkdown(result)).toMatch(/knowledge 0 .*2 in handoff/);
+  });
+
+  it('a budget that bites names which layer it took from', () => {
+    writeRepoFile(
+      'src/a.ts',
+      Array.from({ length: 12 }, (_, i) => `export function fn${i}() {}`).join('\n') + '\n',
+    );
+    for (let i = 1; i <= 8; i++) {
+      engine.remember(`k${i}`, `value number ${i}`, repoDir);
+    }
+    engine.indexRepo(repoDir);
+
+    const tiny = engine.recall(null, repoDir, 40);
+    expect(tiny.coverage.complete).toBe(false);
+    expect(tiny.coverage.dropped.facts + tiny.coverage.dropped.symbols).toBeGreaterThan(0);
+    const md = engine.renderMarkdown(tiny);
+    expect(md).toContain('budget dropped');
+    expect(md).toMatch(/\d+ of 40 tokens/);
+  });
+
+  it('--full keeps every layer whole and drops nothing', () => {
+    for (let i = 1; i <= 20; i++) {
+      engine.remember(`k${i}`, `value ${i}`, repoDir);
+    }
+    engine.indexRepo(repoDir);
+
+    const capped = engine.recall(null, repoDir);
+    const full = engine.recall(null, repoDir, DEFAULT_TOKEN_BUDGET, { full: true });
+
+    expect(capped.facts).toHaveLength(15);
+    expect(full.facts).toHaveLength(20);
+    expect(full.coverage.dropped).toEqual({ facts: 0, knowledge: 0, symbols: 0 });
+    expect(full.coverage.truncated.facts).toBe(false);
+    expect(full.tokenEstimate).toBeGreaterThan(capped.tokenEstimate);
+    // The floor still applies to a capped recall: a target, not a ceiling.
+    const impossible = engine.recall(null, repoDir, 1);
+    expect(impossible.tokenEstimate).toBeGreaterThan(1);
+    expect(impossible.coverage.budget).toBe(1);
+    expect(impossible.coverage.tokens).toBe(impossible.tokenEstimate);
+  });
+});

@@ -86,14 +86,14 @@ Watch mode (`--watch`) re-scans on FS events so memory is never more than one ed
 
 ### 2.3 Recall strategy — budgeted relevance, not recency
 
-`recall(query?)` composes, under a hard token budget (default 2,000):
+`recall(query?)` composes toward a token budget (default 2,000) — a target, not a ceiling: the trim loop has a floor, so a small budget is exceeded rather than under-served, and the block says so. `recall --full` skips the per-layer caps and the trim:
 
 1. **Workspace match** — facts keyed to this repo path (always injected).
 2. **FTS5 ranked hits** — query terms against FactStore + KnowledgeGraph, repo-scoped. With *no* query the recall is anchored instead: this repo's facts and this repo's knowledge, plus the deterministic top-symbol list. A repo path is never used as a search seed (v1.14).
 3. **Structure brief** — top-level module map + key symbols (cheap, deterministic — replaces generic codebase re-read).
 4. **Recent session handoff** — the last saved summary for this repo.
 
-Each row carries a *source* (`fact | symbol | decision | gotcha | session`) and *confidence*; overflow drops lowest-ranked first, never silently truncates mid-fact.
+Each row carries a *source* (`fact | symbol | decision | gotcha | session`) and *confidence*; overflow drops lowest-ranked first, never silently truncates mid-fact — and since v1.29 never silently at all: every block closes with a coverage statement naming what the budget dropped, which layers the store held more of, and how many notes moved to the handoff (`RecallCoverage`, `recall --full` for the uncapped form).
 
 ### 2.4 Components & tech stack
 

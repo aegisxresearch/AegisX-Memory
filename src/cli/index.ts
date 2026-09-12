@@ -204,13 +204,14 @@ program
   .description('print budgeted memory context block (paste into any agent)')
   .argument('[query]', 'search query (defaults to repo-scoped recall)')
   .option('--repo <path>', 'repo root', '.')
-  .option('--budget <n>', 'token budget', intArg, DEFAULT_TOKEN_BUDGET)
+  .option('--budget <n>', 'token budget (a target: the floor can exceed it — see the coverage line)', intArg, DEFAULT_TOKEN_BUDGET)
+  .option('--full', 'return every layer whole, skipping the budget trim', false)
   .option('--json', 'machine-readable output', false)
-  .action((query: string | undefined, opts: { repo: string; budget: number; json: boolean }) => {
+  .action((query: string | undefined, opts: { repo: string; budget: number; full: boolean; json: boolean }) => {
     run(() => {
       const engine = openEngine();
       try {
-        const result = engine.recall(query ?? null, opts.repo, opts.budget);
+        const result = engine.recall(query ?? null, opts.repo, opts.budget, { full: opts.full });
         writeJson(
           { ok: true, ...result, markdown: engine.renderMarkdown(result) },
           opts.json,

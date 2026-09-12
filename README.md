@@ -8,7 +8,7 @@
 
 **English** (this document) | **Bahasa Indonesia** → [`README.id.md`](README.id.md)
 
-Every new AI agent session re-explores your repo: architecture, decisions, gotchas, test commands — re-learned from scratch, every single time. AegisX-Memory fixes this with a **local-first, zero-cloud memory layer** that injects *only relevant* context at session start, under a hard token budget.
+Every new AI agent session re-explores your repo: architecture, decisions, gotchas, test commands — re-learned from scratch, every single time. AegisX-Memory fixes this with a **local-first, zero-cloud memory layer** that injects *only relevant* context at session start, toward a token budget it states honestly at the end of every block.
 
 - 🧠 **Remembers** — facts, decisions, gotchas, session handoffs, code structure
 - ⚡ **Fast** — ~1k files indexed in under 10 s; re-scans in under 200 ms
@@ -101,7 +101,9 @@ Three stores under one SQLite database (`~/.aegisx/memory.sqlite`, WAL + FTS5):
 
 **Hash invalidation, not timestamps.** Code knowledge is keyed to SHA-256 file-content hashes. The moment a file changes, its stale memories are gone. Zero stale answers, zero heuristics.
 
-**Budgeted recall.** A recall composes, under a hard token budget (default 2,000): this repo's facts → this repo's decisions, gotchas and conventions → symbols → last handoff → structure brief. Give it a query and the knowledge and symbol layers become FTS-ranked instead of anchored; without a query nothing from other repos can be pulled in. Overflow drops lowest-priority items first — never mid-fact. A note the last handoff already reprints is served once, from that handoff — never twice.
+**Budgeted recall.** A recall composes toward a token budget (default 2,000): this repo's facts → this repo's decisions, gotchas and conventions → symbols → last handoff → structure brief. Give it a query and the knowledge and symbol layers become FTS-ranked instead of anchored; without a query nothing from other repos can be pulled in. Overflow drops lowest-priority items first — never mid-fact — down to a floor (≥3 facts, ≥1 note, ≥5 symbols, plus the brief), so **the budget is a target, not a ceiling**: on a tiny budget the floor wins and the block comes back larger than asked for. `recall --full` skips the caps and the trim entirely for the sessions that want everything. A note the last handoff already reprints is served once, from that handoff — never twice.
+
+**Every block ends by stating what it left out** — `<!-- recall: complete — 12 facts · 3 knowledge · 8 symbols · 527 tokens (budget 2000) -->`, or on a clipped one `<!-- recall: facts 15 (more exist) · knowledge 0 · 3 in handoff · budget dropped 12 facts · 135 of 40 tokens -->`. Previously the only marker was `<!-- tokens≈N -->`, so a block that dropped twelve facts looked exactly like one with nothing to drop. `--json` carries the same statement as structured fields (`coverage`).
 
 ## 3. Installation
 
@@ -401,7 +403,7 @@ The dashboard binds `127.0.0.1` only (hardcoded — there is no flag to expose i
 |---|---|
 | `aegisxmemory init` | create the memory home + DB, print setup hints |
 | `aegisxmemory index [path]` | full/incremental hash scan of a repo |
-| `aegisxmemory recall [query] [--budget n]` | budgeted context block (markdown) |
+| `aegisxmemory recall [query] [--budget n] [--full]` | context block (markdown), ending in a coverage line; `--full` skips the caps and trim |
 | `aegisxmemory remember <key> <value>` | pin a stable fact |
 | `aegisxmemory forget <key>` | delete a fact (and its superseded values) |
 | `aegisxmemory history [key]` | what a pinned fact used to be (timeline of superseded values) |
@@ -671,6 +673,20 @@ AegisX-Memory is STRIDE-threat-modeled (see `RFC.md` §5) and hardened where the
 - **DoS guards**: symlink refusal, 64-depth cap, 512 KB/file cap, 50k-file cap with explicit abort; 1 MB HTTP body cap with 413.
 - **Uninstall** = `rm -rf ~/.aegisx` — zero residue.
 
+### 15.1 Pre-push secret guard (for this repository)
+
+`scripts/pre-push` blocks a push whose added lines look like a credential (GitHub token, AWS key, PEM private key, Freebuff bearer token). It ships in the repo because the machine-level hook template that does the same job had a silent hole: `grep -E "$pattern"` reads a pattern beginning with `-----BEGIN` as an **option**, so grep exits 2, matches nothing, and the PEM check passed on exactly the leak it existed for. Every pattern now goes through `grep -E -e`, and a first push with nothing to compare against says so instead of reporting success.
+
+```bash
+cp scripts/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+# …or make the repo the guard for every clone you own:
+git config --global core.hooksPath "$PWD/scripts"
+```
+
+Verified both ways: a commit adding a PEM header is refused with exit 1, a clean commit passes with exit 0. The matching line is never echoed — printing it would copy the secret into the terminal and any CI log.
+
+> A hook is a guard-rail, not a scanner. It only inspects the lines a push adds; the real protection is that this project never stores a secret in the first place (`remember`/`save` refuse them, and `.env*`/`*.pem`/`*.key` are never indexed).
+
 ## 16. Troubleshooting
 
 <details>
@@ -763,7 +779,7 @@ CLI / MCP ──► Engine ──► FactStore ─┐
 - **Indexer** (`src/indexer/`) — hash-diff repository walk; extracts symbols/TODOs with per-language extractors. Recognised declarations: JS/TS, Python, Ruby (`def`), Go (`func`, `type`), Rust (`fn`, `mod`, `struct`, `impl`, `trait`), Java, C#, Kotlin (`class`, `interface`, `enum`, `record`, `object`, `namespace`, `union`) and C/C++ return-type functions (`int main(`, `std::string name(`) — column-0 declarations only, so indented members stay out of the index.
 - **Secrets** (`src/core/secrets.ts`) — the single secret detector used by every write path.
 
-Recall composition, under a hard token budget: repo-anchored facts → repo-anchored knowledge (FTS-ranked, and repo-scoped, when the recall carries a query) → symbols (ranked by query, deterministic top-list otherwise) → last handoff → structure brief. A query-less recall is anchored end to end and never searches another repo's facts. Notes the last handoff already reprints are dropped from the knowledge layer, so a sentence is printed once — from the handoff while it is the latest, from the knowledge store after a later handoff takes the slot. Overflow drops lowest-priority items first — never mid-fact.
+Recall composition, toward a token budget (default 2,000; a target, not a ceiling — the trim loop has a floor): repo-anchored facts → repo-anchored knowledge (FTS-ranked, and repo-scoped, when the recall carries a query) → symbols (ranked by query, deterministic top-list otherwise) → last handoff → structure brief. A query-less recall is anchored end to end and never searches another repo's facts. Notes the last handoff already reprints are dropped from the knowledge layer, so a sentence is printed once — from the handoff while it is the latest, from the knowledge store after a later handoff takes the slot. Overflow drops lowest-priority items first — never mid-fact — and the closing coverage comment names what was dropped, what the store held more of, and what moved to the handoff.
 
 ## 20. Roadmap
 

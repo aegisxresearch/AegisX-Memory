@@ -222,6 +222,33 @@ export interface ObservabilityStats {
   hitRate: number | null;
 }
 
+/**
+ * What a recall's budget left out.
+ *
+ * Recall has always been allowed to cut — a count cap per layer and a budget
+ * trim on top — but the cut was silent, so neither the agent nor the owner could
+ * tell a complete block from a clipped one. This is that statement made
+ * explicit, and it travels with the result (JSON, CLI markdown and MCP text).
+ */
+export interface RecallCoverage {
+  /** Token budget the caller asked for. */
+  budget: number;
+  /** Tokens the returned block actually costs. May exceed `budget`: the trim
+   *  loop has a floor, so a tiny budget is a target, not a hard ceiling. */
+  tokens: number;
+  /** Items the budget trim removed, per layer. */
+  dropped: { facts: number; knowledge: number; symbols: number };
+  /** A layer fetched one more row than it kept, i.e. the store holds more than
+   *  this block shows. A boolean, not a count: the extra row is the proof. */
+  truncated: { facts: boolean; knowledge: boolean; symbols: boolean };
+  /** Knowledge entries withheld because the last handoff already reprints them
+   *  (§v1.17). Not a loss — the sentence is served from the handoff instead. */
+  inHandoff: number;
+  /** True when nothing was dropped and no layer overflowed: the block is
+   *  everything the store held for this recall. */
+  complete: boolean;
+}
+
 export interface RecallResult {
   brief: string;
   facts: MemoryFact[];
@@ -229,6 +256,7 @@ export interface RecallResult {
   knowledge: KnowledgeRecord[];
   lastSession?: SessionHandoff;
   tokenEstimate: number;
+  coverage: RecallCoverage;
 }
 
 /** Error categories mapped to CLI exit codes. */
