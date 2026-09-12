@@ -29,6 +29,20 @@ const DEFAULT_SKIP_DIRS = new Set([
 const SYMBOL_LINE =
   /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(function|class|def|struct|impl|trait|type|interface|enum)\s+([A-Za-z_$][\w$]*)/;
 
+/** Every keyword SYMBOL_LINE can capture — i.e. everything that is a real declaration. */
+export const DECLARATION_KINDS: readonly SymbolKind[] = [
+  'function', 'class', 'def', 'struct', 'impl', 'trait', 'type', 'interface', 'enum',
+];
+/** Kinds a query-less recall lists: declarations, then TODO/FIXME markers. */
+export const RECALLABLE_KINDS: readonly SymbolKind[] = [...DECLARATION_KINDS, 'marker'];
+
+/** `kind IN (?,?,…)` fragment: the values stay bound parameters, never SQL text. */
+function bindKinds(kinds: readonly SymbolKind[]): string {
+  return `(${kinds.map(() => '?').join(',')})`;
+}
+const DECLARATION_KINDS_SQL = bindKinds(DECLARATION_KINDS);
+const RECALLABLE_KINDS_SQL = bindKinds(RECALLABLE_KINDS);
+
 const MARKER_LINE = /^\s*\/\/\/?\s*(TODO|FIXME|HACK|NOTE)\b:?\s*(.*)$/;
 const IMPORT_LINE = /^\s*(?:import\s+.*?from\s+|const\s+.*?=\s*require\(|#include\s*[<"])(['"]?)([^'";>]+)\1/;
 
@@ -345,17 +359,17 @@ export class Indexer {
     const topSymbols = (
       this.prepared(
         `SELECT file_path, kind, name, line FROM symbols
-         WHERE repo = ? AND name IS NOT NULL AND kind IN ('function','class','export')
+         WHERE repo = ? AND name IS NOT NULL AND kind IN ${DECLARATION_KINDS_SQL}
          ORDER BY file_path, line LIMIT 40`,
-      ).all(repo) as Array<{ file_path: string; kind: string; name: string; line: number }>
+      ).all(repo, ...DECLARATION_KINDS) as Array<{ file_path: string; kind: string; name: string; line: number }>
     ).map((r) => `- \`${r.file_path}:${r.line}\` ${r.kind} ${r.name}`);
     const lines = [
       '## Code structure brief (from AegisX index)',
       ...topDirs.map(([d, n]) => `- ${d}/ — ${n} symbols`),
-      '',
-      '### Key symbols',
-      ...topSymbols,
     ];
+    if (topSymbols.length > 0) {
+      lines.push('', '### Key symbols', ...topSymbols);
+    }
     return lines.join('\n');
   }
 
@@ -384,9 +398,9 @@ export class Indexer {
   topSymbols(repo: string, limit = 15): SymbolRecord[] {
     const rows = this.prepared(
       `SELECT file_path, kind, name, line, detail FROM symbols
-       WHERE repo = ? AND name IS NOT NULL AND kind IN ('function','class','export','marker')
+       WHERE repo = ? AND name IS NOT NULL AND kind IN ${RECALLABLE_KINDS_SQL}
        ORDER BY file_path, line LIMIT ?`,
-    ).all(repo, limit) as Array<{
+    ).all(repo, ...RECALLABLE_KINDS, limit) as Array<{
       file_path: string; kind: string; name: string | null; line: number; detail: string | null;
     }>;
     return rows.map((row) => ({

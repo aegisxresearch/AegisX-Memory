@@ -104,6 +104,30 @@ describe('Gate 2 — happy paths', () => {
     expect(second.filesChanged).toBe(0);
     expect(second.durationMs).toBeLessThan(200); // RFC target: <200ms warm
   });
+  it('python def/class declarations reach both the brief and query-less recall', () => {
+    writeRepoFile(
+      'app.py',
+      [
+        'import sqlite3',
+        '',
+        'def get_db():',
+        '    return sqlite3.connect("users.db")',
+        '',
+        'class User:',
+        '    pass',
+      ].join('\n'),
+    );
+    engine.indexRepo(repoDir);
+
+    const result = engine.recall(null, repoDir);
+    // Declarations are tagged with their source keyword (`def`), so every kind
+    // the indexer can emit must be listed by the brief, not just JS/TS ones.
+    expect(result.brief).toContain('### Key symbols');
+    expect(result.brief).toContain('def get_db');
+    expect(result.brief).toContain('class User');
+    expect(result.symbols.some((s) => s.kind === 'def' && s.name === 'get_db')).toBe(true);
+    expect(result.symbols.some((s) => s.kind === 'class' && s.name === 'User')).toBe(true);
+  });
 });
 
 describe('Gate 2 — negative edge cases', () => {
@@ -113,6 +137,16 @@ describe('Gate 2 — negative edge cases', () => {
     expect(result.symbols).toEqual([]);
     expect(result.brief).toContain('No indexed symbols');
     expect(engine.renderMarkdown(result)).toContain('AEGISX-MEMORY:BEGIN');
+  });
+
+  it('structure brief omits the symbol list when a repo declares nothing', () => {
+    writeRepoFile('src/notes.ts', '// TODO: add tests\n');
+    engine.indexRepo(repoDir);
+
+    const brief = engine.recall(null, repoDir).brief;
+    expect(brief).toContain('Code structure brief');
+    expect(brief).toContain('src/');
+    expect(brief).not.toContain('### Key symbols');
   });
 
   it('file with no valid symbols and unbalanced unicode does not crash the indexer', () => {

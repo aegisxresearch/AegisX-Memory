@@ -1,6 +1,23 @@
 /** Core contracts shared across engine, CLI, indexer and MCP layers. */
 
-export type SymbolKind = 'function' | 'class' | 'export' | 'marker' | 'import';
+/**
+ * Kinds the indexer emits: the declaration keywords it recognises (one per
+ * language family — `def` for Python, `struct` for Rust, …) plus the two
+ * synthetic kinds it derives from markers and imports. Keep in sync with
+ * SYMBOL_LINE in src/indexer/indexer.ts.
+ */
+export type SymbolKind =
+  | 'function'
+  | 'class'
+  | 'def'
+  | 'struct'
+  | 'impl'
+  | 'trait'
+  | 'type'
+  | 'interface'
+  | 'enum'
+  | 'marker'
+  | 'import';
 export type KnowledgeKind = 'decision' | 'gotcha' | 'convention' | 'lesson';
 
 export interface MemoryFact {
