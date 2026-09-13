@@ -72,15 +72,15 @@ Mulai sekarang loop memorinya otomatis (flag `--rules` membuat agent recall di a
 9. [Referensi CLI](#9-referensi-cli)
 10. [Fakta: penamaan, batasan, contoh](#10-fakta-penamaan-batasan-contoh)
 11. [Session handoff: kontrak JSON](#11-session-handoff-kontrak-json)
-12. [Observability & live index](#12-observability--live-index)
+12. [Observabilitas & index live](#12-observabilitas--index-live)
 13. [Diagnostik: doctor](#13-diagnostik-doctor)
-14. [Environment variables](#14-environment-variables)
+14. [Variabel environment](#14-variabel-environment)
 15. [Keamanan & privasi](#15-keamanan--privasi)
-16. [Troubleshooting](#16-troubleshooting)
+16. [Pemecahan masalah](#16-pemecahan-masalah)
 17. [Uninstall](#17-uninstall)
 18. [Pengembangan](#18-pengembangan)
 19. [Arsitektur](#19-arsitektur)
-20. [Roadmap](#20-roadmap)
+20. [Peta jalan](#20-peta-jalan)
 21. [Lisensi](#21-lisensi)
 
 ---
@@ -107,7 +107,7 @@ Tiga store di bawah satu database SQLite (`~/.aegisx/memory.sqlite`, WAL + FTS5)
 
 **Recall beranggaran.** Satu recall merangkai menuju batas token (default 2.000): fakta repo ini → keputusan, gotcha, dan konvensi repo ini → simbol → handoff terakhir → ringkasan struktur. Beri query dan lapisan knowledge serta simbol berubah dari ter-anchor menjadi berperingkat FTS; tanpa query, tidak ada memori repo lain yang bisa ikut tertarik. Kalau kelebihan, item prioritas terendah yang dibuang lebih dulu — tidak pernah di tengah fakta — sampai ke lantai (≥3 fakta, ≥1 catatan, ≥5 simbol, plus ringkasan struktur), jadi **batas itu target, bukan plafon**: pada budget sangat kecil, lantai yang menang dan bloknya kembali lebih besar dari yang diminta. `recall --full` melewati batas jumlah dan pemangkasan sepenuhnya. Catatan yang sudah dicetak ulang handoff terakhir disajikan sekali, dari handoff itu — bukan dua kali.
 
-**Setiap blok diakhiri pernyataan apa yang tidak dimuat** — `<!-- recall: complete — 12 facts · 3 knowledge · 8 symbols · 527 tokens (budget 2000) -->`, atau pada blok yang terpotong `<!-- recall: facts 15 (more exist) · knowledge 0 · 3 in handoff · budget dropped 12 facts · 135 of 40 tokens -->`. Sebelumnya penandanya hanya `<!-- tokens≈N -->`, sehingga blok yang membuang dua belas fakta tampak identik dengan blok yang tidak punya apa-apa untuk dibuang. `--json` membawa pernyataan yang sama sebagai field terstruktur (`coverage`).
+**Setiap blok diakhiri pernyataan apa yang tidak dimuat** — `<!-- recall: complete — 12 facts · 3 knowledge · 8 symbols · 527 tokens (budget 2000) -->`, atau pada blok yang terpotong `<!-- recall: facts 3 · knowledge 0 · symbols 1 · 3 in handoff · budget dropped 12 facts / 0 knowledge / 0 symbols · 149 of 120 tokens -->`. Sebelumnya penandanya hanya `<!-- tokens≈N -->`, sehingga blok yang membuang dua belas fakta tampak identik dengan blok yang tidak punya apa-apa untuk dibuang. `--json` membawa pernyataan yang sama sebagai field terstruktur (`coverage`).
 
 ## 3. Instalasi
 
@@ -131,11 +131,13 @@ Menjalankan baris yang sama lagi berarti **update** instalasi yang ada (fetch + 
 
 ```bash
 # pasang cabang atau tag tertentu, bukan main
-curl -fsSL .../install.sh | sh -s -- --ref v1.0.0
+curl -fsSL .../install.sh | sh -s -- --ref v1.30.0
 
 # lihat semua opsi (--ref, --dir, --bin, --force, --no-init, --no-path)
 curl -fsSL .../install.sh | sh -s -- --help
 ```
+
+Rilis ditandai `v<versi>` di `main`, dan versi itu yang dilaporkan `aegisxmemory --version`, baris `Version:` dari installer, dan handshake MCP — jadi `--ref v1.30.0` memaku satu rilis persis.
 
 ### Opsi B — npm langsung dari GitHub
 
@@ -155,7 +157,7 @@ cd AegisX-Memory && npm install && npm run build && npm link
 ### Verifikasi
 
 ```bash
-aegisxmemory --help        # daftar perintah + usage
+aegisxmemory --help        # daftar perintah + cara pakai
 aegisxmemory init          # jalan juga kalau tadi terlewat
 ```
 
@@ -253,6 +255,8 @@ Salin blok yang dicetak ke config agent Anda, restart agent. Panduan Hermes leng
 aegisxmemory doctor        # memeriksa registrasi MCP, memberi hint perbaikan
 ```
 
+Baris `mcp registration coverage` menyebut agen mana yang benar-benar ditemukan doctor di mesin ini — `detected on this machine: hermes (all registered) · not installed: claude, cursor, …` — jadi laporan yang senyap pun terjelaskan, bukan ambigu, dan hanya agen yang ada tapi belum di-wiring yang menjadi peringatan.
+
 Atau probe server langsung (harus mencetak lima nama tool):
 
 ```bash
@@ -296,7 +300,7 @@ curl -s http://127.0.0.1:3359/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq -r '.result.tools[].name'
 ```
 
-Diamankan sejak default:
+Aman secara default:
 
 - hanya bind `127.0.0.1`; bind non-localhost ditolak kecuali token diatur,
 - token bearer dibandingkan dalam waktu konstan (SHA-256 + `timingSafeEqual` — tanpa celah timing),
@@ -420,16 +424,16 @@ aegisxmemory dashboard --port 4021
 
 Tampilan hidup dari semua yang diingat engine — menyegarkan tiap 10 detik, dirender lokal. Ada dua tampilan: **Overview** adalah bentuk memorinya, **Memory** adalah teksnya. Satu-satunya write di sini adalah menghapus satu entri knowledge; sisanya tetap read-only.
 
-- **Memory browser** — tampilan yang menjawab "sebenarnya di mana saya *membaca* ini?". Pilih sebuah repository dan setiap decision, gotcha, convention, serta lesson yang tercatat di sana muncul lengkap dengan **body utuhnya**, jenisnya, `#id`-nya (handle yang dipakai `aegisxmemory knowledge --forget <id>`), dan tanggalnya, masing-masing dengan tombol salin. Filter per jenis dan kotak pencarian (judul, body, atau id) mempersempit daftarnya, dan baris di atasnya **mengatakan apa yang tidak ditampilkan** — `menampilkan 200 terbaru dari 1.204 entri yang tersimpan untuk repo ini` — karena endpoint-nya membatasi jumlah baris sambil melaporkan total asli repository itu. Halaman yang sama juga membawa fakta ter-pin repo tersebut beserta handoff-nya **dengan semua daftar utuh** (facts, decisions, gotchas, conventions, next steps), jadi sebuah handoff bisa dibaca ulang, bukan diturunkan ulang. Tidak ada graph di sini: tampilan ini sama sekali tidak memuat graph, dan halaman tiap repo diambil sesuai permintaan (`/api/memory?repo=…`) bukan di-polling, jadi body knowledge tidak pernah ikut menumpang di payload 10 detik. Tampilan terakhir yang Anda buka diingat, dan `#memory` berfungsi sebagai deep link. Setiap entri juga punya tombol **delete** yang **bertanya dulu** (sekali klik membuka `Delete #12?` dengan `confirm delete` / `cancel`, dan tidak ada yang dikirim sebelum Anda mengonfirmasi), lalu menghapus barisnya dan membaca ulang total repository itu dari server, sehingga halaman tidak pernah melaporkan angka hasil tebakan
+- **Memory browser** — tampilan yang menjawab "sebenarnya di mana saya *membaca* ini?". Pilih sebuah repository dan setiap decision, gotcha, convention, serta lesson yang tercatat di sana muncul lengkap dengan **body utuhnya**, jenisnya, `#id`-nya (handle yang dipakai `aegisxmemory knowledge --forget <id>`), dan tanggalnya, masing-masing dengan tombol salin. Filter per jenis dan kotak pencarian (judul, body, atau id) mempersempit daftarnya, dan baris di atasnya **mengatakan apa yang tidak ditampilkan** — `showing the newest 200 of 1204 entries stored for this repo` — karena endpoint-nya membatasi jumlah baris sambil melaporkan total asli repository itu. Halaman yang sama juga membawa fakta ter-pin repo tersebut beserta handoff-nya **dengan semua daftar utuh** (facts, decisions, gotchas, conventions, next steps), jadi sebuah handoff bisa dibaca ulang, bukan diturunkan ulang. Tidak ada graph di sini: tampilan ini sama sekali tidak memuat graph, dan halaman tiap repo diambil sesuai permintaan (`/api/memory?repo=…`) bukan di-polling, jadi body knowledge tidak pernah ikut menumpang di payload 10 detik. Tampilan terakhir yang Anda buka diingat, dan `#memory` berfungsi sebagai deep link. Setiap entri juga punya tombol **delete** yang **bertanya dulu** (sekali klik membuka `Delete #12?` dengan `confirm delete` / `cancel`, dan tidak ada yang dikirim sebelum Anda mengonfirmasi), lalu menghapus barisnya dan membaca ulang total repository itu dari server, sehingga halaman tidak pernah melaporkan angka hasil tebakan
 - **Kartu total bergaya bento** — estimasi token yang dihemat (plus sparkline), repos, fakta (termasuk berapa yang berubah sejak pertama di-pin), entri knowledge, handoff, dan cincin hit-rate recall; angkanya bergerak halus ke nilai baru saat berubah, dan mode reduced motion langsung menampilkan nilai akhirnya
 - **Knowledge graph** — tata letak **klaster deterministik** (repo berjarak di sebuah cincin, fakta/keputusan-gotcha-konvensi/handoff masing-masing dikipas di sekitar hub-nya) yang **tidak pernah diacak ulang**: polling identik meninggalkan setiap node tepat di tempat Anda men-drag-nya. Drag untuk merapikan, pan/zoom (tombol, roda mouse, `+`/`-`, `0` untuk fit), hover atau pilih node untuk meredupkan semua yang bukan tetangganya, filter per jenis (repos / fakta / knowledge / handoff) dengan hitungan `N filtered out` yang live, dan panel detail node terpilih, yang menyebut **jenis** dan **repo**-nya serta menampilkan **teks lengkap tersimpan** (key dan value fakta, judul dan body knowledge, path, goal sebuah handoff) di samping tombol salin sekali-klik, di atas daftar link-nya. Tab masuk ke graph lalu tombol panah menelusuri node dengan roving tab stop
-- **Graf riwayat recall** — recall terbaru sebagai bar di atas grid, dengan pemilih **Show** (10 / 30 / 50 / Semua) yang menentukan berapa banyak yang digambar — yang lebih lama tidak digambar, dan porosnya menulis `menampilkan 10 terakhir dari 143` jadi jendelanya tidak pernah menyempit diam-diam — **setiap bar diberi label jumlah tokennya** dan dijelaskan lewat tooltip. Sebuah **legenda** memerinci artinya — teal = warm hit, kuning = cold miss, tinggi ≈ token yang dikembalikan, peak — sekaligus menyebut gestur keyboard-nya. Tombol **Zoom** mengganti tampilan pas-lebar dengan kanvas lebih lebar yang bisa di-scroll mendatar, dengan ruang per bar dan label yang lebih besar. Grafiknya satu Tab stop: `←`/`→` (atau `↑`/`↓`, plus `Home`/`End`) memindahkan roving tab stop dari bar ke bar. Bar yang Anda fokuskan dijaga **utuh terlihat**: panel men-scroll mendatar saat zoom, dan halaman men-scroll tegak saat viewport pendek. **Baris detail lengkapnya ikut dicerminkan di bawah grafik** — dengan **tombol salin** yang menyerahkan teks bar aktif ke clipboard — dan baris itu mengikuti **hover maupun fokus**, di-debounce supaya menyapu pointer melintasi bar tidak membuatnya berkedip. Ukuran jendela dan pilihan zoom sama-sama **diingat antar-reload** (`localStorage`, persis seperti tema), jadi tampilan yang Anda set akan kembali seperti itu
+- **Graf riwayat recall** — recall terbaru sebagai bar di atas grid, dengan pemilih **Show** (10 / 30 / 50 / All) yang menentukan berapa banyak yang digambar — yang lebih lama tidak digambar, dan porosnya menulis `showing the last 10 of 143 recalls` jadi jendelanya tidak pernah menyempit diam-diam — **setiap bar diberi label jumlah tokennya** dan dijelaskan lewat tooltip. Sebuah **legenda** memerinci artinya — teal = warm hit, kuning = cold miss, tinggi ≈ token yang dikembalikan, peak — sekaligus menyebut gestur keyboard-nya. Tombol **Zoom** mengganti tampilan pas-lebar dengan kanvas lebih lebar yang bisa di-scroll mendatar, dengan ruang per bar dan label yang lebih besar. Grafiknya satu Tab stop: `←`/`→` (atau `↑`/`↓`, plus `Home`/`End`) memindahkan roving tab stop dari bar ke bar. Bar yang Anda fokuskan dijaga **utuh terlihat**: panel men-scroll mendatar saat zoom, dan halaman men-scroll tegak saat viewport pendek. **Baris detail lengkapnya ikut dicerminkan di bawah grafik** — dengan **tombol salin** yang menyerahkan teks bar aktif ke clipboard — dan baris itu mengikuti **hover maupun fokus**, di-debounce supaya menyapu pointer melintasi bar tidak membuatnya berkedip. Ukuran jendela dan pilihan zoom sama-sama **diingat antar-reload** (`localStorage`, persis seperti tema), jadi tampilan yang Anda set akan kembali seperti itu
 - **List view** — graph yang sama dalam bentuk tabel (node, jenis, repository, link) untuk pengguna keyboard dan screen reader
 - **Tabel per-repo** — file/simbol terindeks, scan, recall, hit rate; pilih sebuah repo untuk melihat fakta dan handoff-nya, atau buka tampilan **Memory** untuk membaca knowledge-nya secara lengkap
 - **Fakta ter-pin** — bisa difilter, ada tombol copy per fakta, dan badge **changed** beserta nilai yang digantikannya (`was: 3000 (changed 2026-09-12)`) — sinyal yang sama dengan yang diterima agent saat recall
 Satu-satunya write di dashboard adalah `POST /api/knowledge/delete`, dan ia dijaga, bukan diotentikasi: body JSON (form HTML hanya bisa mengirim urlencoded/text, dan `fetch` lintas-origin dengan body JSON butuh preflight CORS yang tidak pernah diberikan server ini), `Origin` yang harus sama persis dengan host dan port ini, `Sec-Fetch-Site: same-origin` setiap kali browser mengirimnya, header `Host` yang harus menunjuk mesin ini (guard DNS-rebinding yang sama dengan server HTTP MCP), dan body dibatasi 4 KB yang harus menyebut satu id bilangan bulat positif. Selain itu ditolak dengan 405 / 415 / 403 / 413 / 400, dan penolakan tidak pernah menyentuh satu baris pun.
 
-- **Terang / gelap / otomatis** — satu token layer berisi 80+ variabel semantik (warna, spasi, radius, shadow, easing) menggerakkan seluruh halaman, terang maupun gelap, dan **tidak ada komponen yang menulis warna langsung**; tema sudah ditentukan sebelum render pertama mengikuti preferensi OS Anda, dan tombol di kanan atas memutar Auto → Terang → Gelap
+- **Auto / Light / Dark** — satu token layer berisi 80+ variabel semantik (warna, spasi, radius, shadow, easing) menggerakkan seluruh halaman, terang maupun gelap, dan **tidak ada komponen yang menulis warna langsung**; tema sudah ditentukan sebelum render pertama mengikuti preferensi OS Anda, dan tombol di kanan atas memutar Auto → Light → Dark (label tombolnya berbahasa Inggris, seperti seluruh antarmuka dashboard)
 
 Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membukanya), menyajikan stylesheet dan script-nya dari origin sendiri (`/app.css`, `/app.js`) **tanpa CDN dan tanpa request eksternal** (bekerja penuh secara offline), dan merender semua data via `textContent`, jadi nilai fakta jahat tidak akan pernah bisa menyuntikkan markup ke halaman. Setiap respons juga membawa `Content-Security-Policy` yang ketat dengan **nonce baru setiap respons** (`default-src 'none'`, hanya aset dari origin sendiri, plus nonce itu untuk bootstrap tema sebelum render pertama) bersama `X-Content-Type-Options: nosniff` dan `Referrer-Policy: no-referrer` — jadi jaminan bahwa nilai fakta yang tersimpan tidak bisa dieksekusi bersifat struktural, bukan sekadar kebiasaan si perender. Dashboard juga menghormati `prefers-reduced-motion`, menampilkan status koneksi live (`aria-live`, plus status offline eksplisit begitu server mati), dan menandai setiap bagian sebagai landmark `header`/`main` berlabel dengan skip link dan focus ring yang terlihat. Graph-nya memakai **satu** loop animasi saja, yang berhenti begitu tata letaknya stabil dan saat tab disembunyikan.
 
@@ -450,7 +454,7 @@ Dashboard hanya bind ke `127.0.0.1` (dihardcode — tidak ada flag untuk membuka
 | `aegisxmemory stats [path] [--json]` | observability: file/simbol, scan, recall, hit rate, token hemat |
 | `aegisxmemory export [--format md\|json] [--repo p]` | buang fakta, knowledge, dan handoff (markdown, atau JSON) |
 | `aegisxmemory watch [path] [--poll] [--debounce n]` | auto-index event-driven (chokidar, fallback polling) |
-| `aegisxmemory doctor [path] [--fix] [--json]` | health check: DB, skema, drift index, registrasi MCP |
+| `aegisxmemory doctor [path] [--fix] [--json]` | pemeriksaan kesehatan: DB, skema, drift index, registrasi MCP |
 | `aegisxmemory dashboard [--port n] [--no-open]` | dashboard web lokal (grafik, memory browser per-repo, hanya 127.0.0.1) |
 | `aegisxmemory mcp` | jalankan server MCP stdio |
 | `aegisxmemory serve [--port n] [--host h] [--token t]` | MCP lewat HTTP (hanya localhost, auth bearer) |
@@ -647,7 +651,7 @@ Ketiga daftar catatan itu **juga tersimpan sebagai entri knowledge**, di-upsert 
 
 > **Meng-upgrade instalasi yang sudah ada?** Keputusan pada handoff yang Anda simpan *sebelum* perilaku ini ada akan dilipat ke knowledge store satu kali, pada perintah berikutnya yang membuka database — kalimat yang berulang di beberapa handoff menjadi satu entri, dan apa pun yang tampak seperti kredensial dilewati, bukan diterbitkan ulang. Ini terjadi sekali per database; `aegisxmemory doctor` melaporkannya (`knowledge backfill: 3 entries from 3 old handoffs`), dan `aegisxmemory stats` akan menunjukkan angka knowledge naik.
 
-## 12. Observability & live index
+## 12. Observabilitas & index live
 
 ```bash
 aegisxmemory stats                 # ringkasan mudah dibaca
@@ -668,17 +672,38 @@ aegisxmemory stats --json | jq '.tokensSavedEstimate'   # metrik badge / CI
 aegisxmemory doctor
 ```
 
+Contoh keluaran nyata — satu pemeriksaan per baris, `✔` kalau sehat, `!` dengan hint `fix →` kalau tidak:
+
+```
+AegisX-Memory doctor — home: /home/ubuntu/.aegisx
+
+ ✔ db integrity: PRAGMA integrity_check ok (252.0 KB)
+ ✔ schema: 9 core tables present
+ ✔ knowledge backfill: 0 entries from 2 old handoffs, 2 already known (2026-09-12)
+ ! index freshness: index drift: 20 changed, 7 new
+    fix → run `aegisxmemory index .`
+ ✔ mcp: hermes: node  (/home/ubuntu/.hermes/config.yaml)
+ ✔ mcp registration coverage: detected on this machine: hermes (all registered) · not installed: claude, cursor, gemini, codex, windsurf, vscode
+ ✔ memory home: /home/ubuntu/.aegisx is owner-only (700)
+
+Issues found — see fix hints above.
+```
+
 Satu perintah menjawab: sehatkah DB-nya (`PRAGMA integrity_check`), sudahkah skemanya dimigrasi, sinkronkah index dengan disk (drift hash read-only), dan terdaftarkah AegisX di config klien MCP mana pun (Hermes `config.yaml`, Claude `claude_desktop_config.json` / `.mcp.json`, Cursor `mcp.json`). Setiap peringatan disertai hint `fix →` yang konkret; exit code `1` kalau ada yang perlu diperhatikan.
+
+Baris `mcp registration coverage` yang menjaga pemeriksaan ini tetap jujur, karena ia melaporkan hasil probe-nya sendiri: agen yang ditemukan — file config-nya ada, atau CLI-nya ada di `PATH` untuk agen yang terpasang tapi belum pernah di-wiring — dan agen yang dicari tapi tidak ada. Mesin yang hanya menjalankan Hermes mencetak `detected on this machine: hermes (all registered) · not installed: claude, cursor, …`, bukan menyuruh Anda memperbaiki enam agen yang tidak pernah dipasang; ia naik ke `!` hanya untuk agen yang **memang ada** dan belum punya entri `aegisx-memory`, satu-satunya kasus yang bisa Anda betulkan. Pemeriksaan `memory home` menyatakan mode yang benar-benar dimiliki `~/.aegisx` (`0700` owner-only adalah kondisi lulus).
+
+Ia juga memastikan entri yang terdaftar adalah **build yang sedang Anda jalankan**, karena registrasi yang menunjuk salinan lama terlihat sehat-sehat saja sementara agent terus memanggil kode basi: entri ditanya versinya (`node <entry> --version`) dan, bila stempelnya sama, berkasnya dibandingkan dengan berkas sumber terbaru di checkout — jadi `dist/` dari sebelum edit terakhir Anda dilaporkan sebagai `registered entry is older than the sources — rebuild with npm run build`. Entri yang tidak bisa menjawab (berkas hilang, bukan JavaScript, tanpa runtime) tidak pernah ditebak: pemeriksaannya diam, bukan menjadi putusan.
 
 Auto-fix aman dengan `--fix`: meng-inisialisasi DB yang hilang, memigrasi yang kosong, dan re-index drift (semuanya idempotent). Ia sengaja **tidak pernah** menyentuh file config MCP atau DB yang korup — itu butuh keputusan manusia.
 
 Untuk pipeline CI, `--json` mengeluarkan laporan ketat berversi ke stdout (`schemaVersion: 1`) berisi `passed`, `status` per-check, dan fix yang diterapkan — exit code `1` saat `passed` bernilai `false`:
 
 ```bash
-aegisxmemory doctor --json | jq -e '.passed'   # gagalkan job saat check gagal
+aegisxmemory doctor --json | jq -e '.passed'   # gagalkan job saat pemeriksaan gagal
 ```
 
-## 14. Environment variables
+## 14. Variabel environment
 
 | Variabel | Kegunaan | Default |
 |---|---|---|
@@ -704,7 +729,7 @@ AegisX-Memory sudah melalui pemodelan ancaman STRIDE (lihat `RFC.md` §5) dan di
 
 - **Hanya lokal**: tidak ada I/O jaringan di mana pun; hanya MCP stdio (tanpa socket). Transport HTTP opsional hanya bind loopback dan menolak selain itu tanpa token.
 - **Izin file**: memori home dibuat `0700` dan database `0600` (hanya pemilik) — di shared host, akun lain tidak bisa membaca codebase yang Anda index. Hanya mode POSIX; filesystem lain fallback ke pembuatan dengan umask restriktif.
-- **Allowlist repo**: `AEGISX_ALLOWED_REPOS` (lihat [§14](#14-environment-variables)) mengawal setiap operasi berbasis repo — `index`, `recall`, `remember`, `save`, `stats`, start watch — fail closed; recall global tanpa repo membuang knowledge milik project lain.
+- **Allowlist repo**: `AEGISX_ALLOWED_REPOS` (lihat [§14](#14-variabel-environment)) mengawal setiap operasi berbasis repo — `index`, `recall`, `remember`, `save`, `stats`, start watch — fail closed; recall global tanpa repo membuang knowledge milik project lain.
 - **Higiene secret**: `.env*`, `*.pem`, `*.key`, file credentials tidak pernah di-index; value berbentuk secret ditolak oleh `remember` **dan** `save`; baris pembawa secret diedit dari hasil ekstraksi. Satu detector bersama untuk semua jalur tulis.
 - **Tahan injeksi**: teks recall dibungkus blok *untrusted data* yang eksplisit; query FTS di-tokenisasi dan dikutip (tanpa injeksi SQL/FTS; semua statement prepared).
 - **Guard DoS**: penolakan symlink, batas kedalaman 64, batas 512 KB/file, batas 50rb file dengan abort eksplisit; batas body HTTP 1 MB dengan 413.
@@ -724,7 +749,7 @@ Diuji dua arah: commit yang menambahkan header PEM ditolak dengan exit 1, commit
 
 > Hook itu pagar pengaman, bukan pemindai. Ia hanya memeriksa baris yang ditambahkan sebuah push; perlindungan sesungguhnya adalah proyek ini tidak pernah menyimpan secret sejak awal (`remember`/`save` menolaknya, dan `.env*`/`*.pem`/`*.key` tidak pernah di-index).
 
-## 16. Troubleshooting
+## 16. Pemecahan masalah
 
 <details>
 <summary><code>aegisxmemory: command not found</code></summary>
@@ -796,7 +821,27 @@ rm -rf ~/.aegisx-app    # hanya kalau terpasang lewat install.sh
 rm -f ~/.local/bin/aegisxmemory
 ```
 
-Setiap file yang pernah ditulis installer punya backup di sebelahnya (`*.aegisx-bak`) — backup itu tetap ada setelah uninstall, jadi Anda bisa membandingkan apa yang berubah.
+Setiap file yang pernah ditulis installer punya backup di sebelahnya (`*.aegisx-bak`) — backup itu tetap ada setelah uninstall, jadi Anda bisa membandingkan apa yang berubah, sampai install berikutnya menyapu yang file aslinya sudah tidak ada (di bawah).
+
+### 17.1 Perjalanan bolak-balik — install → uninstall → install
+
+Uninstall tidak pernah meninggalkan wiring separuh jalan, dan install berikutnya mulai dari lembar bersih:
+
+1. **Uninstall** mencabut persis apa yang ditulis install, file per file, dan meninggalkan `*.aegisx-bak` di sebelah setiap file yang disentuhnya — jaring pengaman untuk config yang pernah Anda sunting tangan, sekaligus diff yang Anda minta.
+2. **Data Anda tetap di tempatnya.** `~/.aegisx` (fakta, knowledge, handoff, telemetri) dan `~/.aegisx-app` (checkout) tidak pernah disentuh, dan kesimpulan akhirnya mengatakan itu.
+3. **Install berikutnya menyapu orphan-nya.** `aegisxmemory setup` dan `aegisxmemory auto` sama-sama diawali dengan menghapus backup yang di-orphan-kan uninstall: `<file>.aegisx-bak` yang `<file>`-nya sudah tidak ada tidak bisa dipulihkan menjadi apa pun, dan lebih buruk, ia membuat direktorinya tetap hidup, yang oleh setiap inspeksi berikutnya dibaca sebagai “agen ini terpasang di sini.” Backup yang file aslinya masih ada adalah jaring pengaman hidup dan tidak pernah disentuh, orphan yang isinya bukan milik kita dilaporkan bukan dihapus, dan direktori yang dikosongkan proses ini (termasuk yang bersarang seperti `~/.codeium/windsurf`) ikut dipangkas.
+
+```bash
+aegisxmemory setup --yes --agent hermes
+# cleaned up 13 leftover backup(s) from an earlier uninstall · removed 9 empty directories they were keeping alive
+# ✓ hermes: registered in /home/anda/.hermes/config.yaml (backup: …/config.yaml.aegisx-bak)
+```
+
+Sapuan ini dibatasi ke direktori yang memang ditulis AegisX — bukan pencarian rekursif di seluruh `$HOME` — dan hanya mengklaim file yang bisa diatribusikan ke dirinya sendiri; yang tidak dikenali dibiarkan, dengan catatan `kept … backup(s) holding content that is not ours`. Lalu pastikan install yang baru:
+
+```bash
+aegisxmemory doctor        # semua pemeriksaan ✔, coverage menyebut agen yang ditemukan
+```
 
 ## 18. Pengembangan
 
@@ -835,7 +880,7 @@ CLI / MCP ──► Engine ──► FactStore ─┐
 
 Komposisi recall, menuju batas token (default 2.000; target, bukan plafon — loop pemangkasannya punya lantai): fakta milik repo → knowledge milik repo (berperingkat FTS dan dibatasi repo bila recall membawa query) → simbol (diperingkat query, daftar teratas deterministik bila tanpa query) → handoff terakhir → ringkasan struktur. Recall tanpa query ter-anchor sepenuhnya dan tidak pernah mencari fakta repo lain. Catatan yang sudah dicetak ulang handoff terakhir dibuang dari lapisan knowledge, jadi satu kalimat tercetak sekali — dari handoff selama handoff itu yang terbaru, dari knowledge setelah handoff berikutnya mengambil tempatnya. Kelebihan membuang item prioritas terendah lebih dulu — tidak pernah di tengah fakta — dan komentar cakupan di akhir menyebut apa yang dibuang, apa yang masih ada di store, dan apa yang pindah ke handoff.
 
-## 20. Roadmap
+## 20. Peta jalan
 
 Rencana bertahap — setiap item dengan alasannya, perkiraan usaha, dan cara membuktikan selesai — ada di
 [`docs/ROADMAP-POWERFUL.md`](docs/ROADMAP-POWERFUL.md). Ringkasnya:

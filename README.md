@@ -107,7 +107,7 @@ Three stores under one SQLite database (`~/.aegisx/memory.sqlite`, WAL + FTS5):
 
 **Budgeted recall.** A recall composes toward a token budget (default 2,000): this repo's facts → this repo's decisions, gotchas and conventions → symbols → last handoff → structure brief. Give it a query and the knowledge and symbol layers become FTS-ranked instead of anchored; without a query nothing from other repos can be pulled in. Overflow drops lowest-priority items first — never mid-fact — down to a floor (≥3 facts, ≥1 note, ≥5 symbols, plus the brief), so **the budget is a target, not a ceiling**: on a tiny budget the floor wins and the block comes back larger than asked for. `recall --full` skips the caps and the trim entirely for the sessions that want everything. A note the last handoff already reprints is served once, from that handoff — never twice.
 
-**Every block ends by stating what it left out** — `<!-- recall: complete — 12 facts · 3 knowledge · 8 symbols · 527 tokens (budget 2000) -->`, or on a clipped one `<!-- recall: facts 15 (more exist) · knowledge 0 · 3 in handoff · budget dropped 12 facts · 135 of 40 tokens -->`. Previously the only marker was `<!-- tokens≈N -->`, so a block that dropped twelve facts looked exactly like one with nothing to drop. `--json` carries the same statement as structured fields (`coverage`).
+**Every block ends by stating what it left out** — `<!-- recall: complete — 12 facts · 3 knowledge · 8 symbols · 527 tokens (budget 2000) -->`, or on a clipped one `<!-- recall: facts 3 · knowledge 0 · symbols 1 · 3 in handoff · budget dropped 12 facts / 0 knowledge / 0 symbols · 149 of 120 tokens -->`. Previously the only marker was `<!-- tokens≈N -->`, so a block that dropped twelve facts looked exactly like one with nothing to drop. `--json` carries the same statement as structured fields (`coverage`).
 
 ## 3. Installation
 
@@ -131,11 +131,13 @@ Re-running the same line **updates** an existing install (fetch + reset onto the
 
 ```bash
 # install a specific branch or tag instead of main
-curl -fsSL .../install.sh | sh -s -- --ref v1.0.0
+curl -fsSL .../install.sh | sh -s -- --ref v1.30.0
 
 # see every option (--ref, --dir, --bin, --force, --no-init, --no-path)
 curl -fsSL .../install.sh | sh -s -- --help
 ```
+
+Releases are tagged `v<version>` on `main`, and that version is what `aegisxmemory --version`, the installer's `Version:` line and the MCP handshake all report, so `--ref v1.30.0` pins one release exactly.
 
 ### Option B — npm straight from GitHub
 
@@ -252,6 +254,8 @@ Copy the printed block into your agent's config, restart the agent. Full Hermes 
 ```bash
 aegisxmemory doctor        # checks MCP registrations, gives fix hints
 ```
+
+Its `mcp registration coverage` line names the agents doctor actually found on this machine — `detected on this machine: hermes (all registered) · not installed: claude, cursor, …` — so a quiet report is explained instead of ambiguous, and only an agent that is present but still unwired becomes a warning.
 
 Or probe the server directly (should print the five tool names):
 
@@ -420,10 +424,10 @@ aegisxmemory dashboard --port 4021
 
 A live view of everything the engine remembers — refreshed every 10 s, rendered locally. Two views: **Overview** is the shape of memory, **Memory** is its text. Its only write is deleting a single knowledge entry; everything else stays read-only.
 
-- **Memory browser** — the view that answers "where do I actually *read* this?". Pick a repository and every decision, gotcha, convention and lesson it has recorded is listed with its **full body**, its kind, its `#id` (the handle `aegisxmemory knowledge --forget <id>` takes) and its date, each with a copy button. A kind filter and a search box (title, body or id) narrow the list, and the line above it **says what it is not showing** — `showing the newest 200 of 1,204 entries stored for this repo` — because the endpoint caps its rows while reporting the repository's true totals. The same page carries that repo's pinned facts and its handoffs **with every list intact** (facts, decisions, gotchas, conventions, next steps), so a handoff can be re-read instead of re-derived. Nothing here is the graph: there is no graph in this view at all, and each repo's page is fetched on demand (`/api/memory?repo=…`) rather than polled, so knowledge bodies never ride in the 10-second payload. The view you were last on is remembered, and `#memory` is a working deep link. Each entry also carries a **delete** button that **asks first** (one click opens `Delete #12?` with `confirm delete` / `cancel`, and nothing is sent until you confirm), then removes the row and re-reads the repository's totals from the server, so the page never reports a number it guessed
+- **Memory browser** — the view that answers "where do I actually *read* this?". Pick a repository and every decision, gotcha, convention and lesson it has recorded is listed with its **full body**, its kind, its `#id` (the handle `aegisxmemory knowledge --forget <id>` takes) and its date, each with a copy button. A kind filter and a search box (title, body or id) narrow the list, and the line above it **says what it is not showing** — `showing the newest 200 of 1204 entries stored for this repo` — because the endpoint caps its rows while reporting the repository's true totals. The same page carries that repo's pinned facts and its handoffs **with every list intact** (facts, decisions, gotchas, conventions, next steps), so a handoff can be re-read instead of re-derived. Nothing here is the graph: there is no graph in this view at all, and each repo's page is fetched on demand (`/api/memory?repo=…`) rather than polled, so knowledge bodies never ride in the 10-second payload. The view you were last on is remembered, and `#memory` is a working deep link. Each entry also carries a **delete** button that **asks first** (one click opens `Delete #12?` with `confirm delete` / `cancel`, and nothing is sent until you confirm), then removes the row and re-reads the repository's totals from the server, so the page never reports a number it guessed
 - **Bento totals** — estimated tokens saved (with a sparkline), repos, facts (including how many changed since they were first pinned), knowledge entries, handoffs, and a recall hit-rate ring; numbers ease to their new reading on change, and reduced motion renders the final value straight away
 - **Knowledge graph** — a **deterministic clustered layout** (repos spaced on a ring, each hub's facts, decisions/gotchas/conventions and handoffs fanned out around it) that **never reshuffles**: an identical poll leaves every node exactly where you dragged it. Drag to untangle, pan and zoom (buttons, wheel, `+`/`-`, `0` to fit), hover or select a node to dim everything that is not a neighbour, filter by kind (repos / facts / knowledge / handoffs) with a live `N filtered out` count, and open a selected node's detail panel, which names its **kind** and **repo** and shows its **full stored text** (fact key and value, knowledge title and body, a path, a handoff's goal) next to a one-click copy button, above its links. Tab into the graph and the arrow keys walk the nodes with a roving tab stop
-- **Recall history chart** — the most recent recalls as bars on a grid, with a **Show** picker (10 / 30 / 50 / All) choosing how many are drawn — older ones are left out, and the axis says `showing the last 10 of 143` so the window is never silently narrowed — **each bar labelled with its token count** and described by a tooltip. A **legend** spells out the encoding — teal = warm hit, amber = cold miss, height ≈ tokens returned, peak — and names the keyboard gesture. A **Zoom** toggle swaps the fit-to-width view for a wider, horizontally scrollable one with more room per bar and larger labels. The chart is a single Tab stop: `←`/`→` (or `↑`/`↓`, plus `Home`/`End`) move a roving tab stop from bar to bar. The bar you focus is kept **wholly on screen**: the panel scrolls sideways in zoom mode, and the page scrolls vertically when the viewport is short. Its **full detail line is mirrored under the chart** — with a **copy button** that hands the current bar's text to the clipboard — and it follows **hover as well as focus**, debounced so sweeping the pointer across bars cannot strobe the line. Both the window size and the zoom choice are **remembered across reloads** (`localStorage`, exactly like the theme), so the view you set is the view you get back
+- **Recall history chart** — the most recent recalls as bars on a grid, with a **Show** picker (10 / 30 / 50 / All) choosing how many are drawn — older ones are left out, and the axis says `showing the last 10 of 143 recalls` so the window is never silently narrowed — **each bar labelled with its token count** and described by a tooltip. A **legend** spells out the encoding — teal = warm hit, amber = cold miss, height ≈ tokens returned, peak — and names the keyboard gesture. A **Zoom** toggle swaps the fit-to-width view for a wider, horizontally scrollable one with more room per bar and larger labels. The chart is a single Tab stop: `←`/`→` (or `↑`/`↓`, plus `Home`/`End`) move a roving tab stop from bar to bar. The bar you focus is kept **wholly on screen**: the panel scrolls sideways in zoom mode, and the page scrolls vertically when the viewport is short. Its **full detail line is mirrored under the chart** — with a **copy button** that hands the current bar's text to the clipboard — and it follows **hover as well as focus**, debounced so sweeping the pointer across bars cannot strobe the line. Both the window size and the zoom choice are **remembered across reloads** (`localStorage`, exactly like the theme), so the view you set is the view you get back
 - **List view** — the same graph as a plain table (node, kind, repository, links) for keyboard and screen-reader users
 - **Per-repo table** — files/symbols indexed, scans, recalls, hit rate; select a repository for its facts and handoffs, or open the **Memory** view to read its knowledge in full
 - **Pinned facts** — filterable, a copy button per fact, and a **changed** badge plus the value it replaced (`was: 3000 (changed 2026-09-12)`) — the same signal recall gives the agent
@@ -668,7 +672,28 @@ aegisxmemory stats --json | jq '.tokensSavedEstimate'   # badge / CI metric
 aegisxmemory doctor
 ```
 
+Real output — one check per line, `✔` when it is fine, `!` with a `fix →` hint when it is not:
+
+```
+AegisX-Memory doctor — home: /home/ubuntu/.aegisx
+
+ ✔ db integrity: PRAGMA integrity_check ok (252.0 KB)
+ ✔ schema: 9 core tables present
+ ✔ knowledge backfill: 0 entries from 2 old handoffs, 2 already known (2026-09-12)
+ ! index freshness: index drift: 20 changed, 7 new
+    fix → run `aegisxmemory index .`
+ ✔ mcp: hermes: node  (/home/ubuntu/.hermes/config.yaml)
+ ✔ mcp registration coverage: detected on this machine: hermes (all registered) · not installed: claude, cursor, gemini, codex, windsurf, vscode
+ ✔ memory home: /home/ubuntu/.aegisx is owner-only (700)
+
+Issues found — see fix hints above.
+```
+
 One command answers: is the DB healthy (`PRAGMA integrity_check`), is the schema migrated, is the index in sync with the disk (read-only hash drift), and is AegisX registered in any MCP client config (Hermes `config.yaml`, Claude `claude_desktop_config.json` / `.mcp.json`, Cursor `mcp.json`). Every warning comes with a concrete `fix →` hint; exit code `1` if anything needs attention.
+
+It also checks that the registered entry is **the build you are running**, because a registration that points at an older copy looks perfectly healthy while the agent keeps calling stale code: the entry is asked its version (`node <entry> --version`) and, when the stamps match, its file is compared against the newest source file in the checkout — so a `dist/` from before your last edit is reported as `registered entry is older than the sources — rebuild with npm run build`. An entry that cannot answer (missing file, not JavaScript, no runtime) is never guessed at: the check stays silent rather than becoming a verdict.
+
+The `mcp registration coverage` line is the one that keeps the check honest, because it reports its own probe: it names the agents it found — the config file on disk, or the CLI on `PATH` for an agent installed but never wired — and the ones it looked for and did not find. A machine that runs only Hermes says `detected on this machine: hermes (all registered) · not installed: claude, cursor, …` instead of asking you to fix six agents nobody installed; it escalates to `!` only for an agent that **is** present and still has no `aegisx-memory` entry, which is the one case where there is something you can fix. The `memory home` check states the mode `~/.aegisx` actually has (`0700` owner-only is the expected pass).
 
 Safe auto-fixes with `--fix`: initializes a missing DB, migrates an empty one, re-indexes drift (all idempotent). It deliberately **never** touches MCP config files or a corrupted DB — those need human judgement.
 
@@ -796,7 +821,27 @@ rm -rf ~/.aegisx-app    # only if installed via install.sh
 rm -f ~/.local/bin/aegisxmemory
 ```
 
-Every file the installer ever wrote lives next to its backup (`*.aegisx-bak`) — those backups stay after uninstalling so you can diff what changed.
+Every file the installer ever wrote lives next to its backup (`*.aegisx-bak`) — those backups stay after uninstalling so you can diff what changed, until the next install sweeps the ones whose original is gone (below).
+
+### 17.1 The round trip — install → uninstall → install
+
+Uninstalling never leaves you half-wired, and installing again later starts from a clean slate:
+
+1. **Uninstall** removes exactly what install wrote, file for file, and leaves a `*.aegisx-bak` beside every file it touched — the live safety net for a config you had hand-edited, and the diff you asked for.
+2. **Your data stays put.** `~/.aegisx` (facts, knowledge, handoffs, telemetry) and `~/.aegisx-app` (the checkout) are never touched, and the summary says so when it finishes.
+3. **The next install sweeps the orphans.** `aegisxmemory setup` and `aegisxmemory auto` both start by removing the backups an uninstall orphaned: a `<file>.aegisx-bak` whose `<file>` no longer exists can never be restored to anything, and worse, it keeps its directory alive, which every later inspection reads as “that agent is installed here.” A backup whose original still exists is a live safety net and is never touched, an orphan whose content is not ours is reported rather than deleted, and directories this run empties (including nested ones like `~/.codeium/windsurf`) are pruned with them.
+
+```bash
+aegisxmemory setup --yes --agent hermes
+# cleaned up 13 leftover backup(s) from an earlier uninstall · removed 9 empty directories they were keeping alive
+# ✓ hermes: registered in /home/you/.hermes/config.yaml (backup: …/config.yaml.aegisx-bak)
+```
+
+The sweep is scoped to the directories AegisX writes to — never a recursive hunt through `$HOME` — and it only claims a file it can attribute to itself; anything it does not recognize is left in place with a `kept … backup(s) holding content that is not ours` note. Then confirm the fresh install:
+
+```bash
+aegisxmemory doctor        # every check ✔, coverage names the agent(s) it found
+```
 
 ## 18. Development
 

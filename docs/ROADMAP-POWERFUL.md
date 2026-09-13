@@ -30,6 +30,8 @@
 | 0.3 | **Wizard menanam file repo**, otomatis, dengan penjaga: tidak pernah menulis ke direktori home | `runSetupWizard(engine, { projectDir })` · 3 tes |
 | 0.4 | **Lapisan salience di protokol MCP** — server mengirim `instructions` (kontrak ringkas, diinjeksikan klien ke konteks model) dan deskripsi tool yang *memerintah* ("call this BEFORE reading files"), bukan menyapa | `src/mcp/server.ts`, `src/mcp/http-server.ts`, `src/mcp/tools.ts` · bekerja tanpa kepatuhan pada file aturan |
 | 0.5 | **Penulis config: Gemini CLI, Codex (TOML tanpa dependensi), Windsurf, VS Code** — SETUP_AGENTS kini 7 klien | `installForAgent` · 12 tes baru · doctor mendeteksi & menghitung cakupan ketujuhnya |
+| 0.6 | **Installer membersihkan sisa uninstall-nya sendiri** — `setup`/`auto` menyapu `*.aegisx-bak` yang berkas aslinya sudah hilang (hanya di direktori yang AegisX tulis; backup hidup tidak disentuh; orphan yang bukan milik kita dilaporkan, bukan dihapus) plus direktori hantu yang ia hidupkan, terdalam dulu | round trip 7 agen meninggalkan 13 backup + 9 direktori kosong yang membuat "bersih" tidak pernah benar | M | `sweepOrphanedBackups()` · 7 tes + round trip nyata (13 dibersihkan, orphan 0) |
+| 0.7 | **Tes paritas dokumen EN/ID** — outline heading satu-per-satu, ToC ↔ seksi bernomor, fence berimbang (komentar `#` di dalam fence bukan heading) | dua README mulai menyimpang tanpa ada yang menangkap | S | `test/docs.test.ts` (6 tes); mutasi uji: tambah 1 heading → 3 tes gagal |
 
 Biaya blok: **±690 token**, dibaca sekali per sesi per repo.
 
@@ -48,18 +50,21 @@ Hari ini **tujuh** klien punya penulis config: Hermes, Claude, Cursor, Gemini CL
 | ~~1.5~~ | ✅ **`setup --yes --agent <name[,name]>`** non-interaktif | untuk dotfiles/CI, dan untuk menuliskan setup ke skrip | S | tes: satu perintah, tidak ada tanya — mendarat |
 | ~~1.6~~ | ✅ **`uninstall --agent <name>`** — cabut entri MCP + blok aturan + hook, dengan backup; mirror installer (repo AGENTS.md, hook project, dan hook Hermes ikut dicabut) | sekarang §17 hanya instruksi manual; memasang lebih mudah daripada melepas | M | tes: file kembali seperti semula (17 tes uninstall) — mendarat |
 | ~~1.9~~ | ✅ **`aegisxmemory auto`** — deteksi otomatis agent terpasang + wiring + daemon MCP HTTP & dashboard (`--status`/`--down`), dan wizard memasang hook Hermes (`pre_llm_call`/`pre_verify`) secara otomatis | langkah terakhir onboarding kini nol pertanyaan: install → `auto` → restart agent | M | 10 tes baru (`test/auto.test.ts`) + uji live sandbox — mendarat |
-| 1.7 | **`doctor` memverifikasi registrasi** — entri menunjuk berkas entry yang ada, versi cocok, dan agent terpasang tapi belum terdaftar ditandai | "sudah terinstall" tanpa verifikasi adalah klaim kosong | M | tes: entri rusak → peringatan |
+| ~~1.7~~ | ✅ **`doctor` memverifikasi registrasi** — entri yang berkas entry-nya hilang → `fail`, entri yang bukan AegisX → warn, dan hanya agen yang **benar-benar ada** di mesin yang ditagih; agen tak terpasang dibisukan, sementara baris laporannya tetap menyebut apa yang ditemukan | "sudah terinstall" tanpa verifikasi adalah klaim kosong — dan menuduh agen yang tidak ada melatih orang mengabaikan laporan | M | tes: entri hilang → fail, entri asing → warn, mesin-hermes-saja → senyap — mendarat |
+| ~~1.10~~ | ✅ **`doctor` mencocokkan versi entry** — entri dijalankan (`node <entry> --version`) dan stempelnya dibandingkan dengan build yang sedang menjalankan laporan; kalau stempel sama tapi bundel lebih tua dari `src/`, itu ditandai "rebuild dengan `npm run build`". Probe yang gagal tidak pernah jadi putusan | berkas ada ≠ build yang dipakai benar, dan `dist` basi tetap terpakai tanpa satu pun error | S | tes: stempel beda → warn, entri lebih tua dari sumber → warn, probe gagal → pass — mendarat di `src/cli/version.ts` + `doctor.ts` |
 | 1.8 | **Pilihan bahasa wizard** (`--lang en\|id`) | pesan CLI saat ini selalu Indonesia | S | tes: output `en` tidak memuat teks Indonesia |
 
 ---
 
 ## Fase 2 — Otomasi yang tidak bergantung disiplin model (P1)
 
-Blok aturan bekerja **kalau model patuh**. Hook bekerja **kalau agent memanggilnya**, tanpa bergantung kepatuhan.
+Blok aturan bekerja **kalau model patuh**. Hook bekerja **kalau agent memanggilnya**, tanpa bergantung kepatuhan — dengan satu syarat yang ditemukan lewat uji live: **dialek payload-nya harus benar untuk agent itu**. Hook yang terpasang, exit 0, dan "sehat" di doctor tapi menyuntik nol lebih buruk daripada tidak ada hook sama sekali.
 
 | # | Item | Kenapa | Usaha | Bukti selesai |
 |---|---|---|---|---|
-| ~~2.1~~ | ✅ **`aegisxmemory hook session-start` / `hook session-end`** — JSON Claude Code asli: SessionStart → `hookSpecificOutput.additionalContext`, session-end → Stop payload `{decision:block, reason}` | recall otomatis di awal, pengingat handoff di akhir — tanpa kepatuhan model | M | 22 tes baru di `test/hooks.test.ts` + bukti live di wire |
+| ~~2.1~~ | ✅ **`aegisxmemory hook session-start` / `hook session-end`** — **dua dialek** lewat `--client claude\|hermes`: Claude Code (SessionStart → `hookSpecificOutput.additionalContext`, Stop → `{decision:block,reason}`) dan Hermes asli (`{"context": …}`, `{action,message}`); skrip yang dipasang installer memangku `--client hermes` | Hermes hanya membaca `context` — bentuk Claude **diabaikan tanpa error**, jadi hook "sehat" itu tidak menyuntik apa pun | M | 22+ tes di `test/hooks.test.ts` (termasuk satu tes yang gagal bila flag itu hilang) + uji live dua sesi Hermes asli — mendarat |
+| ~~2.5~~ | ✅ **Skrip hook ditulis hanya saat byte-nya berubah** — Hermes membandingkan `script_mtime_at_approval`, jadi menulis ulang tanpa syarat memicu *"script modified since approval"* setiap kali `auto`/`setup` dijalankan walau isinya sama | peringatan palsu yang selalu menyala = peringatan yang diabaikan | S | tes: re-install idempoten tidak menyentuh mtime; badan berubah tetap ditulis — mendarat |
+| ~~2.6~~ | ✅ **Hook recall menyuntik di turn pertama saja** — skrip membaca `extra.is_first_turn`; field yang absen (Hermes lama, dijalankan manual, klien lain) tetap menyuntik, jadi perubahan bentuk payload menurun ke "sedikit mahal", bukan ke senyap | Hermes memanggil `pre_llm_call` tiap turn dan tiap pesan user disegel dengan apa yang dikirim, jadi tanpa gerbang blok memori terkirim ulang di setiap turn sesi panjang | S | tes: `is_first_turn:true` → JSON, `false` → stdout kosong, absen → JSON |
 | ~~2.2~~ | ✅ **Pasang hook: `hook session-start --install [--project]`** + tawaran wizard untuk target claude (dengan backup, idempoten, marker) | supaya otomatis benar-benar otomatis | M | tes installer (created/merged/unchanged/error) + 3 tes wizard |
 | ~~2.3~~ | ✅ **Auto-index berbatas waktu di session-start** — `Indexer.scan` menerima deadline kooperatif (diperiksa antar file, commit atomik awalan, resume dari hash tersimpan); `indexRepoWithDeadline` di Engine | pengguna baru tidak perlu tahu `index`; jujur saat anggaran habis (`null` = "belum selesai", bukan gagal) | M | 3 tes deadline di `test/engine.test.ts` |
 | ~~2.4~~ | ✅ **`hook post-edit`** → indeks inkremental sekali jalan | index tetap segar tanpa daemon `watch` | S | tes: berkas berubah → simbol muncul |
@@ -70,8 +75,8 @@ Blok aturan bekerja **kalau model patuh**. Hook bekerja **kalau agent memanggiln
 
 | # | Item | Kenapa | Usaha | Bukti selesai |
 |---|---|---|---|---|
-| 3.1 | **Perluas peta sinonim** (`gagal`, `salah`, `rusak`, `batal`, `langganan`, …) | terukur hari ini: `database`→`sqlite` ketemu, `gagal`→`error` **tidak** | S | tes: setiap pasangan baru ketemu |
-| 3.2 | **Recall jujur saat nol hasil** — bedakan "tidak ada isinya" dari "tidak dicari": `0 knowledge (9 stored, none matched)` | sekarang menulis `complete` saat jawabannya kosong — menyesatkan | S | tes: query tanpa hasil ≠ `complete` telanjang |
+| ~~3.1~~ | ✅ **Peta sinonim diperluas** — `gagal` kini satu kelompok dengan `error`/`bug`/`galat`/`fail`, plus `salah`, `rusak`, `batal`, `langganan`, `hapus`, `simpan`, … (kelompok tidak saling menaut, jadi kata sekonsep harus sekelompok) | terukur dulu: `database`→`sqlite` ketemu, `gagal`→`error` **tidak** | S | mendarat di `src/core/fts.ts` (`SYNONYM_GROUPS`) |
+| ~~3.2~~ | ✅ **Recall jujur saat nol hasil** — `0 facts (some exist, none matched)`, `0 knowledge (… )`, `0 symbols (some indexed, none matched)` | laporan kosong dulu terbaca seperti `complete` — menyesatkan | S | mendarat di `src/core/engine.ts` + tes |
 | 3.3 | **`knowledge edit <id>`** | memperbaiki catatan tanpa hapus + tulis ulang | S | tes: judul/isi berubah, id sama |
 | 3.4 | **`aegisxmemory import`** (round-trip `export --format json`) | export ada, jalur baliknya tidak — pindah mesin belum utuh | M | tes: export → import → isi identik |
 | 3.5 | **Deteksi kemiripan saat save** (judul sama sudah upsert; isi mirip belum) | mencegah 5 catatan yang mengatakan hal yang sama | M | tes: dua catatan mirip → dilaporkan, tidak diam-diam |
@@ -87,7 +92,7 @@ Blok aturan bekerja **kalau model patuh**. Hook bekerja **kalau agent memanggiln
 | 4.1 | **Panel bantuan** (arti hit/miss/budget/estimasi) EN+ID | grafik tanpa legenda adalah teka-teki | S | tes: panel ada di HTML tersaji |
 | 4.2 | **Tren hit-rate harian** | satu angka total tidak menunjukkan arah | M | tes: seri 7 hari benar |
 | 4.3 | **Edit entri knowledge dari UI** (POST update, postur keamanan sama dengan delete) | delete sudah ada, koreksi belum | M | tes: guard 405/415/403 + update sukses |
-| 4.4 | **Kotak pencarian + filter kind/repo** di halaman browser memori | halaman browser tanpa pencarian hanya berguna untuk < 20 entri | M | tes: query menyaring |
+| ~~4.4~~ | ✅ **Picker repo + filter kind (segmented) + kotak pencarian** di halaman browser memori | halaman browser tanpa pencarian hanya berguna untuk < 20 entri | M | mendarat di `src/cli/dashboard.ts` (`#mem-repo`, `#mem-kinds`, `#mem-search`) |
 | 4.5 | **Tombol export dari dashboard** (md/json) | jalur cadangan yang tidak butuh terminal | S | tes: endpoint mengembalikan isi |
 | 4.6 | **Perbaikan grafik**: label panjang, filter kind persisten, mode fokus | sudah diperbaiki sebagian; ini sisa yang terlihat di layar user | S | tes: state bertahan setelah reload |
 
@@ -97,8 +102,8 @@ Blok aturan bekerja **kalau model patuh**. Hook bekerja **kalau agent memanggiln
 
 | # | Item | Kenapa | Usaha | Bukti selesai |
 |---|---|---|---|---|
-| 5.1 | **Bump versi + tag git per rilis** (`v1.30.0`, …) | installer mencetak `Version: 1.0.0` sejak commit pertama — pernah menyesatkan user | S | `--ref v1.30.0` bisa dipasang |
-| 5.2 | **`--version` memuat commit + tanggal build** | satu-satunya cara user tahu build mana yang ia pakai | S | output: `1.30.0 (6b46298 · 2026-09-12)` |
+| ~~5.1~~ | ✅ **Bump versi + tag git per rilis** (`v1.30.0`, …) — versi kini **1.30.0** di `package.json`, `--version`, installer, dan handshake MCP (satu konstanta di `src/core/version.ts`, dijaga tes anti-drift) | installer mencetak `Version: 1.0.0` sejak commit pertama — pernah menyesatkan user | S | mendarat: `aegisxmemory --version` → `1.30.0 (…)`; prosedur tag ada di README §Install |
+| ~~5.2~~ | ✅ **`--version` memuat commit + tanggal build** | satu-satunya cara user tahu build mana yang ia pakai | S | nyata: `1.0.0 (e6b670e · 2026-09-13)` — nomor versinya sendiri masih 1.0.0 (lihat 5.1) |
 | 5.3 | **`doctor` melaporkan "ketinggalan N commit"** (best-effort, berbatas waktu, gagal senyap saat offline) | Hermes melakukannya untuk dirinya; kita belum | S | tes: offline → tidak error |
 | 5.4 | **`install.ps1`** untuk Windows | sekarang hanya `install.sh` | M | jalur PowerShell teruji di Windows |
 | 5.5 | **`aegisxmemory update`** | update tanpa mengingat URL | S | tes: menjalankan jalur git pull + build |
@@ -112,7 +117,7 @@ Blok aturan bekerja **kalau model patuh**. Hook bekerja **kalau agent memanggiln
 | # | Item | Kenapa | Usaha | Bukti selesai |
 |---|---|---|---|---|
 | 6.1 | **`backup` / `restore`** (API backup SQLite + cek integritas) | memori adalah satu berkas; menyalinnya saat WAL hidup berisiko | M | tes: backup → restore → identik |
-| 6.2 | **Izin rumah memori diperiksa & diperbaiki** — temuan nyata: rumah lama di mesin ini `0775`, rumah baru `0700` | direktori yang bisa dibaca grup membocorkan metadata proyek | S | `doctor` melaporkan + `chmod 700` otomatis |
+| ~~6.2~~ | ✅ **Izin rumah memori diperiksa & diperbaiki** — temuan nyata: rumah lama di mesin ini `0775`, rumah baru `0700` | direktori yang bisa dibaca grup membocorkan metadata proyek | S | mendarat: `doctor` melaporkan, `doctor --fix` men-`chmod 700` |
 | 6.3 | **Konkurensi tulis** (dua agent bersamaan) + `busy_timeout` | dua agent pada satu repo itu normal | M | tes: 2 penulis paralel, tidak ada kunci mati |
 | 6.4 | **`vacuum`/`analyze` berkala** + ukuran DB di `doctor` | memori tumbuh selamanya tanpa perawatan | S | `doctor` menampilkan ukuran |
 | 6.5 | **Uji beban indeks** (repo besar, mis. 50k berkas) + laporan waktu | janji "hemat token" harus diukur pada repo nyata | M | laporan angka, bukan klaim |
@@ -156,6 +161,6 @@ Rekomendasi: **A + C sekarang**, B ditahan sampai ada pengukuran pada data Indon
 
 | Batch | Isi | Kenapa urutan ini |
 |---|---|---|
-| **A — jujur & cepat** | 3.2, 3.1, 1.7, 5.2, 6.2 | semuanya kecil, semuanya menutup klaim yang sekarang belum bisa dibuktikan |
-| **B — satu perintah semua agent** | 1.1–1.4, 1.5, 2.1 | inti keluhan "ribet buat orang awam" |
-| **C — kedalaman** | 3.3, 3.4, 4.1–4.4, 6.1, 5.1 | memperluas yang sudah kuat |
+| ~~A — jujur & cepat~~ | 3.2, 3.1, 1.7, 5.2, 6.2 | ✅ mendarat semua — statusnya ada di tabel fase masing-masing |
+| **B — satu perintah semua agent** | sisa 1.3, 1.4, 1.8 (1.1, 1.2, 1.5, 1.6, 1.9 sudah ✅) | inti keluhan "ribet buat orang awam" |
+| **C — kedalaman** | 3.3, 3.4, 3.5, 3.6, 3.7, 4.1, 4.2, 4.3, 4.5, 4.6, 5.1, 6.1 (4.4 sudah ✅) | memperluas yang sudah kuat |

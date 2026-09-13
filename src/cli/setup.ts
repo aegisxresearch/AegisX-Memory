@@ -228,7 +228,8 @@ export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}
 
   const names = choice.agents.join(', ');
   say(`\nSelesai untuk: ${names}.\n`);
-  say('Langkah terakhir: TUTUP lalu BUKA lagi agent Anda (MCP tidak bisa hot-reload).\n');
+  say('Langkah terakhir: TUTUP lalu BUKA lagi agent Anda agar MCP + hook-nya tersambung\n');
+  say('(agent yang mendukung auto-reload — Hermes, misalnya — menyambung MCP sendiri saat config berubah; hook baru dipakai di sesi berikutnya.)\n');
   say('\nSetelah itu, cukup bicara normal. Contoh di Hermes:\n');
   say('  - "recall the project memory"  → dia baca ingatannya\n');
   say('  - "save the session handoff"   → dia catat progres (otomatis jika rules aktif)\n');
