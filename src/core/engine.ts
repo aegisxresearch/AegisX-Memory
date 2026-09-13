@@ -12,7 +12,7 @@ import { normalizeRepoPath, parseAllowedRepos, assertRepoAllowed } from './paths
 import { Store, ftsEscape, knowledgeTitle, KNOWLEDGE_BACKFILL_META } from './store.js';
 import { Indexer, isSecretBearingFile } from '../indexer/indexer.js';
 import { containsSecret } from './secrets.js';
-import { AegisxError, type FactHistoryEntry, type KnowledgeKind, type KnowledgeRecord, type MemoryExport, type MemoryFact, type ObservabilityStats, type RecallCoverage, type RecallResult, type RepoMemory, type RepoSummary, type ScanStats, type SessionHandoff, type SessionHandoffInput, type SessionSaveSummary } from './types.js';
+import { AegisxError, type FactHistoryEntry, type KnowledgeKind, type KnowledgeRecord, type MemoryExport, type MemoryFact, type ObservabilityStats, type RecallCoverage, type RecallResult, type RepoMemory, type RepoSummary, type ScanStats, type SessionHandoff, type SessionHandoffInput, type SessionCheckpointSummary, type SessionSaveSummary } from './types.js';
 
 export const DEFAULT_TOKEN_BUDGET = 2_000;
 /** Per-layer cap for a `--full` recall — everything the store holds, up to a
@@ -300,6 +300,35 @@ export class Engine {
   }
 
   saveSession(repoAbsPath: string, input: SessionHandoffInput): SessionSaveSummary {
+    const { repo, handoff } = this.screenSession(repoAbsPath, input);
+    this.store.saveSession(repo, handoff);
+    return this.recordNotes(repo, handoff);
+  }
+
+  /**
+   * Save a handoff that belongs to a named agent session — the automatic path.
+   *
+   * In-place per session, because this runs on every turn: `mode: 'unchanged'`
+   * means the turn added nothing worth re-storing, and the knowledge notes are
+   * skipped with it (they are keyed by sentence, so re-recording is a no-op
+   * anyway — skipping just stops paying for it).
+   */
+  saveSessionCheckpoint(
+    repoAbsPath: string,
+    sessionKey: string,
+    input: SessionHandoffInput,
+  ): SessionCheckpointSummary {
+    const { repo, handoff } = this.screenSession(repoAbsPath, input);
+    const result = this.store.upsertSession(repo, sessionKey, handoff);
+    if (result.mode === 'unchanged') {
+      return { notesRecorded: 0, notesAlreadyKnown: 0, mode: result.mode };
+    }
+    return { ...this.recordNotes(repo, handoff), mode: result.mode };
+  }
+
+  /** Normalize + secret-screen one handoff. Shared so the manual and automatic
+   *  paths cannot drift on the refusal contract (RFC §5, STRIDE:I). */
+  private screenSession(repoAbsPath: string, input: SessionHandoffInput): { repo: string; handoff: SessionHandoff } {
     const repo = normalizeRepoPath(repoAbsPath);
     this.guardRepo(repo);
     // `gotchas`/`conventions` are optional at the caller edge: normalize once so
@@ -309,8 +338,8 @@ export class Engine {
       gotchas: input.gotchas ?? [],
       conventions: input.conventions ?? [],
     };
-    // Secret hygiene (RFC §5, STRIDE:I): the handoff is stored verbatim and
-    // recalled into future sessions, so every string is scanned before persisting.
+    // Secret hygiene: the handoff is stored verbatim and recalled into future
+    // sessions, so every string is scanned before persisting.
     if (containsSecret(handoff.goal)) {
       throw new AegisxError('user', 'session goal looks like a secret/credential; refusing to store (secret hygiene)');
     }
@@ -324,13 +353,18 @@ export class Engine {
         }
       }
     }
-    this.store.saveSession(repo, handoff);
-    // Decisions, gotchas and conventions are the only places those notes are
-    // ever captured, and nothing wrote the knowledge store at all before this —
-    // so recall's notes block and the dashboard graph were always empty. Each
-    // note is upserted by its sentence: one taken once stays findable in later
-    // sessions instead of living only inside the handoff it was written in, and
-    // one repeated across sessions is refreshed rather than forked.
+    return { repo, handoff };
+  }
+
+  /**
+   * Decisions, gotchas and conventions are the only places those notes are ever
+   * captured, and nothing wrote the knowledge store at all before this — so
+   * recall's notes block and the dashboard graph were always empty. Each note is
+   * upserted by its sentence: one taken once stays findable in later sessions
+   * instead of living only inside the handoff it was written in, and one
+   * repeated across sessions is refreshed rather than forked.
+   */
+  private recordNotes(repo: string, handoff: SessionHandoff): SessionSaveSummary {
     return this.store.recordHandoffNotes(repo, {
       decisions: handoff.decisions,
       gotchas: handoff.gotchas,

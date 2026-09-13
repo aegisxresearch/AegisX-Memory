@@ -18,6 +18,11 @@
  *                       --json: Claude Code Stop output {decision:"block",
  *                       reason} so the agent itself is told to save the
  *                       handoff. --json only: a human does not need nagging.
+ *   hook autosave       derive the session's handoff from the transcript the
+ *                       agent already sent and store it, with no model call
+ *                       and no reminder to ignore. stdout is always empty:
+ *                       the event observes, it does not inject. One row per
+ *                       session, rewritten as the session learns more.
  *   hook post-edit      incremental index of one repo; JSON summary. A failure
  *                       degrades to a stderr note and exit 0 — a hook must
  *                       never turn a quiet repo into an agent-visible error.
@@ -26,11 +31,13 @@
  * note, not a crash, because a hook that throws on first run teaches users to
  * delete hooks.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AegisxError } from '../core/types.js';
 import { Engine, DEFAULT_TOKEN_BUDGET } from '../core/engine.js';
+import { deriveHandoff } from '../core/handoff.js';
 import { selfServerEntry } from './mcp-config.js';
 
 /** Budget for hook session-start auto-index. Set below the dashboard's
@@ -43,7 +50,7 @@ export const POST_EDIT_DEADLINE_MS = 15_000;
  *  results, so a tiny budget would be nondeterminism, not a feature. */
 export const MIN_HOOK_DEADLINE_MS = 250;
 
-export type HookEvent = 'session-start' | 'session-end' | 'post-edit';
+export type HookEvent = 'session-start' | 'session-end' | 'post-edit' | 'autosave';
 
 /** Which agent's hook protocol to emit. The two dialects differ in ways that
  *  fail *silently* when crossed — Hermes' `_parse_context` reads a top-level
@@ -52,8 +59,8 @@ export type HookEvent = 'session-start' | 'session-end' | 'post-edit';
 export type HookClient = 'claude' | 'hermes';
 
 export function parseHookEvent(value: string): HookEvent {
-  if (value === 'session-start' || value === 'session-end' || value === 'post-edit') return value;
-  throw new AegisxError('user', `unknown hook event "${value}"; expected one of: session-start, session-end, post-edit`);
+  if (value === 'session-start' || value === 'session-end' || value === 'post-edit' || value === 'autosave') return value;
+  throw new AegisxError('user', `unknown hook event "${value}"; expected one of: session-start, session-end, post-edit, autosave`);
 }
 
 export function parseHookClient(value: string): HookClient {
@@ -153,6 +160,109 @@ export function hookSessionEnd(opts: { repo?: string } = {}): SessionEndResult {
     ? 'Session ending. Call aegisxmemory_save (or run `aegisxmemory save --json -`) with this session\'s goal, facts, decisions, gotchas, conventions and nextSteps before stopping.'
     : 'Session ending. If anything was worked out this session (goal, decisions, gotchas), call aegisxmemory_save so the next session starts knowing it.';
   return { repo, hasHandoffEver, reminder };
+}
+
+/* ---------------------------------------------------------------- autosave */
+
+/** The part of an agent's event payload the automatic save needs, in whatever
+ *  dialect the agent sent it. */
+export interface AgentEventPayload {
+  repo?: string | undefined;
+  sessionId: string;
+  messages: unknown[];
+  assistantResponse?: string | undefined;
+  userMessage?: string | undefined;
+}
+
+/**
+ * Read the fields the save path needs out of an agent's event JSON.
+ *
+ * Missing or malformed input yields an empty transcript rather than an error:
+ * the caller distinguishes "nothing to save" from "could not read", and a hook
+ * that throws on an unfamiliar payload teaches users to delete hooks.
+ */
+export function parseAgentEventPayload(raw: string | null): AgentEventPayload {
+  const empty: AgentEventPayload = { sessionId: '', messages: [] };
+  if (raw === null || raw.trim() === '') return empty;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return empty;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return empty;
+  const root = parsed as Record<string, unknown>;
+  const extra =
+    root['extra'] !== null && typeof root['extra'] === 'object' && !Array.isArray(root['extra'])
+      ? (root['extra'] as Record<string, unknown>)
+      : {};
+  const pickString = (key: string, scope: Record<string, unknown>): string | undefined => {
+    const value = root[key] ?? scope[key];
+    return typeof value === 'string' && value !== '' ? value : undefined;
+  };
+  const history = extra['conversation_history'] ?? root['conversation_history'];
+  return {
+    repo: pickString('cwd', root),
+    sessionId: pickString('session_id', root) ?? '',
+    messages: Array.isArray(history) ? history : [],
+    assistantResponse: pickString('assistant_response', extra),
+    userMessage: pickString('user_message', extra),
+  };
+}
+
+export interface AutosaveResult {
+  repo: string;
+  saved: boolean;
+  /** How the row was written, or why nothing was. Surfaced on stderr only. */
+  detail: string;
+}
+
+/**
+ * autosave: persist this session's handoff from the transcript, with no model
+ * call and nothing for the model to ignore.
+ *
+ * This closes the asymmetry that made the memory loop only half deterministic:
+ * recall fired from a hook, while saving waited for the model to obey a nudge
+ * (and a session that ignored it left no trace at all).
+ *
+ * Session identity comes from the agent when it sends one, and from the opening
+ * request when it does not — a handoff rewritten per turn must be able to find
+ * the row it wrote last turn without depending on a clock.
+ */
+export function hookAutosave(opts: { repo?: string; payload?: string | null } = {}): AutosaveResult {
+  const event = parseAgentEventPayload(opts.payload ?? null);
+  const repo = resolveHookRepo(opts.repo ?? event.repo);
+  // Opt-out for users who want the hook installed but silent (`auto` and
+  // `setup` install it; this is the switch that does not require re-running them).
+  if (process.env['AEGISX_AUTOSAVE'] === '0') {
+    return { repo, saved: false, detail: 'auto-save disabled (AEGISX_AUTOSAVE=0)' };
+  }
+  const handoff = deriveHandoff({
+    messages: event.messages,
+    assistantResponse: event.assistantResponse,
+    userMessage: event.userMessage,
+  });
+  if (handoff === null) {
+    return { repo, saved: false, detail: 'nothing in this turn was worth remembering' };
+  }
+  const sessionKey = event.sessionId !== ''
+    ? event.sessionId
+    : `derived:${crypto.createHash('sha1').update(`${repo}\u0000${handoff.goal}`).digest('hex')}`;
+  const engine = openEngine();
+  try {
+    const summary = engine.saveSessionCheckpoint(repo, sessionKey, handoff);
+    if (summary.mode === 'unchanged') {
+      return { repo, saved: false, detail: 'handoff unchanged since the previous turn' };
+    }
+    const notes = summary.notesRecorded === 1 ? '1 new note' : `${summary.notesRecorded} new notes`;
+    return {
+      repo,
+      saved: true,
+      detail: `${summary.mode} handoff — ${handoff.facts.length} facts, ${notes}`,
+    };
+  } finally {
+    engine.close();
+  }
 }
 
 /* -------------------------------------------------------------- post-edit */
@@ -320,12 +430,21 @@ export interface HookRunOutcome {
   stderr: string;
 }
 
+/** Render/route a result for one event, including the side-effect-only one. */
+type HookResult = SessionStartResult | SessionEndResult | PostEditResult | AutosaveResult;
+
 const EMPTY_CONTEXT_HINT =
   'AegisX-Memory: no memory stored for this repository yet. It will fill as facts are remembered and sessions are saved.';
 
 /** Render one hook event for one mode. Pure (no process I/O) so the protocol
  *  is testable without spawning the CLI. `client` picks the wire dialect. */
-export function renderHook(event: HookEvent, r: SessionStartResult | SessionEndResult | PostEditResult, json: boolean, client: HookClient = 'claude'): HookRunOutcome {
+export function renderHook(event: HookEvent, r: HookResult, json: boolean, client: HookClient = 'claude'): HookRunOutcome {
+  if (event === 'autosave') {
+    const a = r as AutosaveResult;
+    // Never stdout: `post_llm_call` is an observer, and stdout is the injection
+    // channel. The note rides on stderr, which the hook scripts discard.
+    return { exitCode: 0, stdout: '', stderr: `aegisx-memory: ${a.saved ? 'saved' : 'no save'} — ${a.detail}\n` };
+  }
   if (event === 'session-start') {
     const r0 = r as SessionStartResult;
     const parts = [r0.indexNote, r0.context].filter((s): s is string => s !== null && s !== '');
@@ -365,11 +484,12 @@ export function renderHook(event: HookEvent, r: SessionStartResult | SessionEndR
 
 /** Facade used by the CLI action: computes the result and renders it, mapping
  *  every failure to exit 0 + a stderr note — hooks degrade, never error out. */
-export function runHook(event: HookEvent, opts: { json: boolean; repo?: string; budget?: number; deadlineMs?: number; client?: HookClient }): HookRunOutcome {
+export function runHook(event: HookEvent, opts: { json: boolean; repo?: string; budget?: number; deadlineMs?: number; client?: HookClient; payload?: string | null }): HookRunOutcome {
   const client = opts.client ?? 'claude';
   try {
     if (event === 'session-start') return renderHook(event, hookSessionStart(opts), opts.json, client);
     if (event === 'session-end') return renderHook(event, hookSessionEnd(opts), opts.json, client);
+    if (event === 'autosave') return renderHook(event, hookAutosave(opts), opts.json, client);
     return renderHook(event, hookPostEdit(opts), opts.json, client);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

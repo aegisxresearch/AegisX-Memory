@@ -12,7 +12,12 @@
  *   pre_verify   → aegisx-save-nudge.sh when the agent edited code and is
  *                                      about to finish, one nudge returns
  *                                      {"action":"continue","message"} so it
- *                                      saves the handoff first.
+ *                                      saves the handoff first;
+ *   post_llm_call→ aegisx-autosave.sh  every turn, writes the handoff itself
+ *                                      from the transcript and the reply
+ *                                      Hermes passes in. Recall was always
+ *                                      deterministic; this is the half that
+ *                                      used to wait for the model to obey.
  *
  * Scripts carry the same `aegisx-memory:*` markers the Claude installer uses,
  * so idempotence survives re-formatting of config.yaml by other tools.
@@ -27,11 +32,23 @@ import { isMap, parseDocument } from 'yaml';
 import { selfServerEntry } from './mcp-config.js';
 import type { HookInstallResult } from './hooks.js';
 
-/** The two lifecycle events Hermes understands that map to the memory loop.
+/** The lifecycle events Hermes understands that map to the memory loop.
  *  `pre_llm_call` may return `{"context": "…"}` (plugin dispatch contract);
- *  `pre_verify` accepts the Claude-style Stop payload or the plain action. */
-export const HERMES_HOOK_EVENTS = ['pre_llm_call', 'pre_verify'] as const;
+ *  `pre_verify` accepts the Claude-style Stop payload or the plain action;
+ *  `post_llm_call` is an observer — its stdout is ignored, which is why the
+ *  autosave script can carry a side effect and return nothing. */
+export const HERMES_HOOK_EVENTS = ['pre_llm_call', 'pre_verify', 'post_llm_call'] as const;
 export type HermesHookEvent = (typeof HERMES_HOOK_EVENTS)[number];
+
+/** Event → script filename. One table so the installed path, the idempotence
+ *  marker, uninstall and the script bodies cannot disagree about which file is
+ *  which — uninstall used to carry its own copy of this list and silently left
+ *  the autosave script behind when a third hook arrived. */
+export const HERMES_HOOK_SCRIPTS: Record<HermesHookEvent, string> = {
+  pre_llm_call: 'aegisx-recall.sh',
+  pre_verify: 'aegisx-save-nudge.sh',
+  post_llm_call: 'aegisx-autosave.sh',
+};
 
 /** Where the hook scripts live. Hermes ships its own agent-hooks dir for this. */
 export function hermesAgentHooksDir(configFile: string, homeDir?: string): string {
@@ -67,7 +84,7 @@ export function hermesHookScripts(bin?: string): HookScriptSpec[] {
   const cmd = bin ?? resolveBin();
   return [
     {
-      file: 'aegisx-recall.sh',
+      file: HERMES_HOOK_SCRIPTS.pre_llm_call,
       event: 'pre_llm_call',
       timeout: 15,
       json: true,
@@ -111,7 +128,7 @@ exec ${cmd} hook session-start --json --client hermes
 `,
     },
     {
-      file: 'aegisx-save-nudge.sh',
+      file: HERMES_HOOK_SCRIPTS.pre_verify,
       event: 'pre_verify',
       timeout: 10,
       json: false,
@@ -123,6 +140,43 @@ exec ${cmd} hook session-start --json --client hermes
 # the turn it guards.
 exec 2>/dev/null
 exec ${cmd} hook session-end --json --client hermes
+`,
+    },
+    {
+      file: HERMES_HOOK_SCRIPTS.post_llm_call,
+      event: 'post_llm_call',
+      timeout: 20,
+      json: true,
+      body: `#!/usr/bin/env sh
+# aegisx-memory:post-llm-call — write this session's handoff from the transcript
+# the agent already handed over, instead of waiting for the model to obey the
+# pre_verify nudge. That nudge was the only reason a session could end leaving
+# no trace at all.
+#
+# Hermes fires post_llm_call at the end of every turn with
+# 'extra.conversation_history' and 'extra.assistant_response', which is enough to
+# derive a handoff with rules alone — including a one-shot run, where the only
+# turn is also the last one and no later turn will ever see its reply.
+#
+# stdout stays empty: post_llm_call is an observer, and empty stdout is the
+# protocol's "nothing to inject". The whole point of this script is the database
+# write, and a failure still exits 0 so a memory home problem cannot fail a turn.
+exec 2>/dev/null
+RAW=$(cat 2>/dev/null || true)
+CWD=$(printf '%s' "$RAW" | /usr/bin/env node -e '
+  let raw = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (c) => { raw += c; });
+  process.stdin.on("end", () => {
+    try {
+      const j = JSON.parse(raw);
+      process.stdout.write(typeof j.cwd === "string" ? j.cwd : "");
+    } catch { /* malformed body: stay in the process cwd */ }
+  });
+' 2>/dev/null)
+cd "\${CWD:-\$PWD}" 2>/dev/null || true
+printf '%s' "$RAW" | ${cmd} hook autosave --json --client hermes
+exit 0
 `,
     },
   ];
@@ -160,7 +214,7 @@ export function hermesHooksInstalled(configFile: string): boolean {
  *  aegisx-memory:session-start marker, but the command line in config.yaml is
  *  a bare path, so marker-matching must key on what the path ends with. */
 function markerFor(event: HermesHookEvent): string {
-  return event === 'pre_llm_call' ? 'aegisx-recall.sh' : 'aegisx-save-nudge.sh';
+  return HERMES_HOOK_SCRIPTS[event];
 }
 
 /** Install (or refresh) the pair: write the scripts, merge the hooks block,

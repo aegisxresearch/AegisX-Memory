@@ -356,14 +356,15 @@ Two entries are written (marker-wrapped, backed up, idempotent — user hooks un
 
 `aegisxmemory hook session-end --json` prints the Claude Code Stop-hook payload (`{"decision":"block","reason":…}`) that tells the agent to save the handoff before stopping — install it by hand if you want that enforced too. Every hook degrades instead of failing: a missing memory home, a denied repo, or a spent deadline becomes a stderr note and exit 0, never an agent-visible error. Restart Claude Code after installing (hooks are read at launch).
 
-**Hermes gets the same deterministic layer automatically.** `setup`/`auto` (or `mcp-config --install --agent hermes --rules`) merges two shell hooks into `~/.hermes/config.yaml`:
+**Hermes gets the same deterministic layer automatically.** `setup`/`auto` (or `mcp-config --install --agent hermes --rules`) merges three shell hooks into `~/.hermes/config.yaml`:
 
 | Hook | Fires | What it does |
 |---|---|---|
 | `pre_llm_call` | first turn of every session | injects the budgeted memory block (`{"context": …}`) before the model sees anything |
-| `pre_verify` | the agent edited code and is about to finish | one nudge (`{"decision":"block","reason":…}`) to save the handoff first |
+| `post_llm_call` | end of every turn | **saves the session handoff itself** from the transcript Hermes already sends, so nothing depends on the model remembering to save. Rules only — no model call. One handoff per session, rewritten as it learns; `AEGISX_AUTOSAVE=0` turns it off |
+| `pre_verify` | the agent edited code and is about to finish | one nudge (`{"decision":"block","reason":…}`) to save the handoff first — a fallback now |
 
-The scripts live in `~/.hermes/agent-hooks/`, are marker-identified and idempotent, and `uninstall --agent hermes` removes both entries and the scripts. Verify with `hermes hooks doctor`.
+The scripts live in `~/.hermes/agent-hooks/`, are marker-identified and idempotent, and `uninstall --agent hermes` removes every entry and the scripts. Verify with `hermes hooks doctor`.
 
 ## 7. The daily loop
 

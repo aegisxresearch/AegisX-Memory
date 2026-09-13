@@ -356,14 +356,15 @@ Dua entri ditulis (berpembatas penanda, di-backup, idempotent — hook milik pen
 
 `aegisxmemory hook session-end --json` mencetak payload Stop-hook Claude Code (`{"decision":"block","reason":…}`) yang menyuruh agent menyimpan handoff sebelum berhenti — pasang manual kalau itu pun mau dipaksa. Setiap hook *mengalah*, bukan gagal: memory home yang belum ada, repo yang ditolak allowlist, atau anggaran waktu habis menjadi catatan di stderr dan exit 0 — bukan error yang terlihat agent. Restart Claude Code setelah memasang (hook dibaca saat launch).
 
-**Hermes mendapat lapisan deterministik yang sama secara otomatis.** `setup`/`auto` (atau `mcp-config --install --agent hermes --rules`) menggabungkan dua shell hook ke `~/.hermes/config.yaml`:
+**Hermes mendapat lapisan deterministik yang sama secara otomatis.** `setup`/`auto` (atau `mcp-config --install --agent hermes --rules`) menggabungkan tiga shell hook ke `~/.hermes/config.yaml`:
 
 | Hook | Kapan | Apa yang dilakukan |
 |---|---|---|
 | `pre_llm_call` | giliran pertama tiap sesi | menyuntikkan blok memori (`{"context": …}`) sebelum model melihat apa pun |
-| `pre_verify` | agent selesai mengedit kode | satu nudge (`{"decision":"block","reason":…}`) agar handoff disimpan dulu |
+| `post_llm_call` | akhir tiap giliran | **menyimpan handoff sesi sendiri** dari transkrip yang sudah dikirim Hermes, jadi tidak lagi bergantung pada model yang ingat menyimpan. Hanya aturan — tanpa panggilan model. Satu handoff per sesi, diperbarui saat sesi belajar; `AEGISX_AUTOSAVE=0` mematikannya |
+| `pre_verify` | agent selesai mengedit kode | satu nudge (`{"decision":"block","reason":…}`) agar handoff disimpan dulu — kini sekadar cadangan |
 
-Skripnya ada di `~/.hermes/agent-hooks/`, ber-marker dan idempoten, dan `uninstall --agent hermes` mencabut kedua entri sekaligus skripnya. Verifikasi dengan `hermes hooks doctor`.
+Skripnya ada di `~/.hermes/agent-hooks/`, ber-marker dan idempoten, dan `uninstall --agent hermes` mencabut semua entri sekaligus skripnya. Verifikasi dengan `hermes hooks doctor`.
 
 ## 7. Loop harian
 

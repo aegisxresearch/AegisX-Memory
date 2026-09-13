@@ -35,6 +35,7 @@ import {
   rulesPathFor,
   type SetupAgent,
 } from './auto-setup.js';
+import { HERMES_HOOK_EVENTS, HERMES_HOOK_SCRIPTS } from './hermes-hooks.js';
 import {
   HOOK_POST_EDIT_MARKER,
   HOOK_SESSION_START_MARKER,
@@ -352,7 +353,10 @@ export function uninstallHermesHooks(configFile: string): UninstallResult {
 
   let touched = false;
   const scriptFiles: string[] = [];
-  for (const [event, fileName] of [['pre_llm_call', 'aegisx-recall.sh'], ['pre_verify', 'aegisx-save-nudge.sh']] as const) {
+  // Iterate the installer's own event→script table: a hardcoded copy here left
+  // the autosave script orphaned in agent-hooks the moment a third hook landed.
+  for (const event of HERMES_HOOK_EVENTS) {
+    const fileName = HERMES_HOOK_SCRIPTS[event];
     const list = hooks.get(event, true);
     if (!isSeq(list)) continue;
     const kept = list.items.filter((item: unknown) => {
@@ -393,7 +397,7 @@ export function uninstallHermesHooks(configFile: string): UninstallResult {
 
   // Scripts first, whichever way the config file ends up: the file-deleted
   // path used to return before this loop, so a config we deleted outright left
-  // its `aegisx-recall.sh` / `aegisx-save-nudge.sh` orphaned in agent-hooks.
+  // its hook scripts orphaned in agent-hooks.
   const removeScripts = (): void => {
     for (const script of scriptFiles) {
       try {

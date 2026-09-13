@@ -83,6 +83,13 @@ export interface SessionSaveSummary {
   notesAlreadyKnown: number;
 }
 
+/** A handoff written by the automatic checkpoint path. `mode` says how the row
+ *  was written, so a per-turn hook can report "nothing new" instead of claiming
+ *  a save on every turn. */
+export interface SessionCheckpointSummary extends SessionSaveSummary {
+  mode: 'inserted' | 'updated' | 'unchanged';
+}
+
 export interface SessionHandoff {
   goal: string;
   facts: string[];

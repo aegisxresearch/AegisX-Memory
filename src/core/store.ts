@@ -4,6 +4,7 @@
  */
 import DatabaseConstructor from 'better-sqlite3';
 import type { Database as DatabaseType, Statement, RunResult } from 'better-sqlite3';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -616,19 +617,58 @@ export class Store {
 
   saveSession(repo: string, handoff: SessionHandoff): void {
     assertHandoff(handoff);
-    this.prepared(
-      `INSERT INTO sessions (repo, goal, facts, decisions, gotchas, conventions, next_steps, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      repo,
-      handoff.goal,
-      JSON.stringify(handoff.facts),
-      JSON.stringify(handoff.decisions),
-      JSON.stringify(handoff.gotchas),
-      JSON.stringify(handoff.conventions),
-      JSON.stringify(handoff.nextSteps),
-      new Date().toISOString(),
-    );
+    this.prepared(SESSION_INSERT_SQL).run(repo, ...sessionColumns(handoff, new Date().toISOString()));
+  }
+
+  /**
+   * Write a handoff that belongs to a named agent session, updating the row the
+   * previous checkpoint wrote rather than appending a new one.
+   *
+   * The key is (repo, sessionKey) and the value remembers the row id plus a
+   * fingerprint of the content, so:
+   *  - a turn that produced the same handoff as the last one writes nothing;
+   *  - a turn that learned something rewrites its own row in place, keeping one
+   *    handoff per session in the dashboard and `resume`;
+   *  - a row deleted behind our back (a user cleaning house) is re-created
+   *    instead of silently updating a missing id.
+   */
+  upsertSession(repo: string, sessionKey: string, handoff: SessionHandoff): SessionUpsertResult {
+    assertHandoff(handoff);
+    const fingerprint = handoffFingerprint(handoff);
+    const metaKey = sessionCheckpointMetaKey(repo, sessionKey);
+    const previous = this.readCheckpointPointer(metaKey);
+    if (previous !== null) {
+      const owned = this.prepared('SELECT 1 AS one FROM sessions WHERE id = ?').get(previous.id) !== undefined;
+      if (owned && previous.hash === fingerprint) return { mode: 'unchanged', id: previous.id };
+      if (owned) {
+        this.prepared(
+          `UPDATE sessions SET goal = ?, facts = ?, decisions = ?, gotchas = ?, conventions = ?, next_steps = ?, created_at = ?
+           WHERE id = ?`,
+        ).run(...sessionColumns(handoff, new Date().toISOString()), previous.id);
+        this.setMeta(metaKey, JSON.stringify({ id: previous.id, hash: fingerprint }));
+        return { mode: 'updated', id: previous.id };
+      }
+    }
+    const info = this.prepared(SESSION_INSERT_SQL).run(repo, ...sessionColumns(handoff, new Date().toISOString()));
+    const id = Number(info.lastInsertRowid);
+    this.setMeta(metaKey, JSON.stringify({ id, hash: fingerprint }));
+    return { mode: 'inserted', id };
+  }
+
+  /** The checkpoint pointer for a session, or null when absent/mangled. A
+   *  mangled pointer is not fatal: the next write inserts a fresh row. */
+  private readCheckpointPointer(metaKey: string): { id: number; hash: string } | null {
+    const raw = this.getMeta(metaKey);
+    if (raw === undefined) return null;
+    try {
+      const parsed = JSON.parse(raw) as { id?: unknown; hash?: unknown };
+      if (typeof parsed.id === 'number' && typeof parsed.hash === 'string') {
+        return { id: parsed.id, hash: parsed.hash };
+      }
+    } catch {
+      // fall through to a fresh insert
+    }
+    return null;
   }
 
   lastSession(repo: string): SessionHandoff | undefined {
@@ -1061,6 +1101,47 @@ function parseStringArray(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** One INSERT statement for both handoff paths, so the column list cannot
+ *  drift between the manual save and the automatic checkpoint. */
+const SESSION_INSERT_SQL = `INSERT INTO sessions (repo, goal, facts, decisions, gotchas, conventions, next_steps, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+
+/** The handoff columns in INSERT order, after `repo`. */
+function sessionColumns(handoff: SessionHandoff, createdAt: string): string[] {
+  return [
+    handoff.goal,
+    JSON.stringify(handoff.facts),
+    JSON.stringify(handoff.decisions),
+    JSON.stringify(handoff.gotchas),
+    JSON.stringify(handoff.conventions),
+    JSON.stringify(handoff.nextSteps),
+    createdAt,
+  ];
+}
+
+/** Where an auto-saved handoff remembers the row it owns. The `sessions` table
+ *  predates session keys, and a checkpoint must *update* the handoff it wrote a
+ *  turn ago instead of appending a new one every turn — a 40-turn session would
+ *  otherwise leave 40 handoffs in the dashboard. `meta` already exists for
+ *  exactly this kind of bookkeeping, so no schema migration is needed. */
+export function sessionCheckpointMetaKey(repo: string, sessionKey: string): string {
+  return `session_checkpoint:${repo}:${sessionKey}`;
+}
+
+/** Content fingerprint: lets an unchanged turn skip the write entirely. */
+function handoffFingerprint(handoff: SessionHandoff): string {
+  const body = JSON.stringify(
+    [handoff.goal, handoff.facts, handoff.decisions, handoff.gotchas, handoff.conventions, handoff.nextSteps],
+  );
+  return crypto.createHash('sha256').update(body).digest('hex');
+}
+
+export interface SessionUpsertResult {
+  /** `unchanged` means the checkpoint matched what was already stored. */
+  mode: 'inserted' | 'updated' | 'unchanged';
+  id: number;
 }
 
 function assertHandoff(handoff: SessionHandoff): void {

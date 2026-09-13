@@ -505,7 +505,7 @@ program
 program
   .command('hook')
   .description('agent lifecycle hooks: memory loads and the save reminder fire without relying on model compliance')
-  .argument('<event>', 'session-start | session-end | post-edit')
+  .argument('<event>', 'session-start | session-end | post-edit | autosave')
   .option('--json', 'machine-readable protocol output (Claude Code SessionStart/Stop/PostToolUse JSON)', false)
   .option('--client <name>', 'hook dialect: claude (default) | hermes', 'claude')
   .option('--repo <path>', 'repo root (default: resolve from stdin JSON cwd, else process cwd)')
@@ -533,12 +533,19 @@ program
       }
       // Claude Code passes the event JSON on stdin; consume it without
       // hanging when nothing is piped (raw CLI use, TTY or closed stdin).
-      const raw = process.stdin.isTTY === false ? await readStdinOnce() : null;
+      // The test must be `=== true`, not `=== false`: Node leaves `isTTY`
+      // *undefined* on a pipe, so the old check never matched and the payload
+      // was silently dropped — autosave depends on it, and so did the stdin
+      // `cwd` fallback that never actually resolved a repo.
+      const raw = process.stdin.isTTY === true ? null : await readStdinOnce();
       const repo = opts.repo ?? repoFromStdinJson(raw);
       const outcome = runHook(parsedEvent, {
         json: opts.json,
         client: parseHookClient(opts.client),
         repo,
+        // The whole body, not just its cwd: `autosave` derives the handoff from
+        // the transcript the agent sent, and re-reading stdin is not an option.
+        payload: raw,
         budget: opts.budget,
         deadlineMs: opts.deadline ?? (parsedEvent === 'post-edit' ? POST_EDIT_DEADLINE_MS : HOOK_INDEX_DEADLINE_MS),
       });

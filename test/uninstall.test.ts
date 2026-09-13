@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { installClaudeHooks } from '../src/cli/hooks.js';
-import { installHermesHooks } from '../src/cli/hermes-hooks.js';
+import { HERMES_HOOK_EVENTS, HERMES_HOOK_SCRIPTS, installHermesHooks } from '../src/cli/hermes-hooks.js';
 import { installForAgent, installProjectRules, installRulesForAgent } from '../src/cli/auto-setup.js';
 import {
   runUninstall,
@@ -271,9 +271,26 @@ describe('uninstall — Hermes hooks leave no husk', () => {
     const hooksDir = path.join(workspace, name, 'agent-hooks');
     const result = installHermesHooks(configFile, { hooksDir, bin: 'aegisxmemory-fake' });
     expect(result.action).not.toBe('error');
-    expect(fs.existsSync(path.join(hooksDir, 'aegisx-recall.sh'))).toBe(true);
+    for (const event of HERMES_HOOK_EVENTS) {
+      expect(fs.existsSync(path.join(hooksDir, HERMES_HOOK_SCRIPTS[event]))).toBe(true);
+    }
     return { configFile, hooksDir };
   }
+
+  it('regression: removes every script the installer writes, not a hardcoded pair', () => {
+    // The uninstaller carried its own copy of the event→script list, so adding
+    // the autosave hook left `aegisx-autosave.sh` behind and the folder the
+    // removal claimed to have emptied stayed alive.
+    const scripts = HERMES_HOOK_EVENTS.map((event) => HERMES_HOOK_SCRIPTS[event]);
+    expect(scripts.length).toBeGreaterThan(2);
+    const { configFile, hooksDir } = installPair('every-script');
+    const result = uninstallHermesHooks(configFile);
+    expect(result.action).toBe('file-deleted');
+    for (const file of scripts) {
+      expect(fs.existsSync(path.join(hooksDir, file))).toBe(false);
+    }
+    expect(fs.existsSync(hooksDir)).toBe(false);
+  });
 
   it('happy: the scripts and the folder we emptied are both gone', () => {
     const { configFile, hooksDir } = installPair('plain');
@@ -282,6 +299,7 @@ describe('uninstall — Hermes hooks leave no husk', () => {
     expect(result.action).toBe('removed');
     expect(fs.existsSync(path.join(hooksDir, 'aegisx-recall.sh'))).toBe(false);
     expect(fs.existsSync(path.join(hooksDir, 'aegisx-save-nudge.sh'))).toBe(false);
+    expect(fs.existsSync(path.join(hooksDir, 'aegisx-autosave.sh'))).toBe(false);
     expect(fs.existsSync(hooksDir)).toBe(false);
     expect(fs.readFileSync(configFile, 'utf8')).toContain('tokenrouter'); // user config intact
   });

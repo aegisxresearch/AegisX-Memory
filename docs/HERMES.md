@@ -92,15 +92,32 @@ mcp_servers:
 ### 3.1 Hermes-native hooks (the deterministic half)
 
 Hermes runs approved shell hooks from `~/.hermes/agent-hooks/`. `setup`/`auto`
-install two of them, and neither depends on the model reading `SOUL.md`:
+install three of them, and none depends on the model reading `SOUL.md`:
 
 | Hook event | Script | What it does |
 |---|---|---|
 | `pre_llm_call` | `aegisx-recall.sh` | injects the budgeted recall block (`{"context": "…"}`) into the first turn of a session |
-| `pre_verify` | `aegisx-save-nudge.sh` | after the agent edits code, nudges it to save the handoff (`{"action":"continue","message":"…"}`) |
+| `post_llm_call` | `aegisx-autosave.sh` | **writes the session's handoff itself** from the `conversation_history` and `assistant_response` Hermes already sends — no model tool call, stdout empty (it observes, it does not inject) |
+| `pre_verify` | `aegisx-save-nudge.sh` | after the agent edits code, nudges it to save the handoff (`{"action":"continue","message":"…"}`) — a fallback now that `post_llm_call` saves on its own |
+
+The autosave hook derives the handoff with rules only (goal, commands run,
+files changed, decisions, gotchas, conventions, next steps), then keeps **one row
+per session**, rewritten as the session learns more: the pointer from (repo,
+session id) to the stored row lives in the memory DB's `meta` table, so a turn
+that adds nothing writes nothing and a 40-turn session still leaves one handoff.
+Set `AEGISX_AUTOSAVE=0` to keep the hook installed but silent.
+
+A handoff is only written when there is something to carry forward — a transcript
+with no human turn, or one that only exchanged greetings, stores nothing.
+
+Two honest limits of the automatic path: the derived notes are *patterns* (a
+sentence saying "decided" is recorded as a decision), and per-turn checkpoints
+mean the model's own wording is never summarised — for a richer handoff, ask the
+model to save one with `aegisxmemory_save` as before.
 
 The scripts call `aegisxmemory hook session-start --json --client hermes` (and
-`hook session-end`). `--client hermes` is what makes the payload correct — the
+`hook autosave`, `hook session-end`). `--client hermes` is what makes the payload
+correct — the
 Claude Code shape (`hookSpecificOutput.additionalContext`) is read by Claude
 Code and **silently ignored** by Hermes, which only reads `context`.
 
@@ -179,8 +196,10 @@ Expected: `aegisxmemory_recall`, `aegisxmemory_remember`, `aegisxmemory_save`, `
   context — no phrase needed. Asking *"recall the project memory"* still works,
   and is how you pull a fresh block mid-session.
 - During work: *"remember that tests run with pnpm test"* → `aegisxmemory_remember`.
-- Session end: the `pre_verify` hook nudges the handoff; say *"save the session
-  handoff"* to have the model write it with `aegisxmemory_save`.
+- Session end: nothing to do — the `post_llm_call` hook (3.1) has already saved
+  the handoff from the transcript, every turn. The `pre_verify` nudge still fires
+  as a fallback, and saying *"save the session handoff"* gets the model to write
+  a richer one with `aegisxmemory_save`.
 - Keep the index fresh: run `aegisxmemory watch /path/to/repo` in a separate
   terminal (add `--poll` on network/VM filesystems), or let Hermes call
   `aegisxmemory_index` after bulk edits. `watch --json` emits JSONL per-scan events.
