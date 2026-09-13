@@ -4,7 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { installForAgent, installProjectRules, installRulesForAgent, memoryRulesBlock } from '../src/cli/auto-setup.js';
+import {
+  describeSweep,
+  installForAgent,
+  installProjectRules,
+  installRulesForAgent,
+  memoryRulesBlock,
+  sweepOrphanedBackups,
+} from '../src/cli/auto-setup.js';
 import { defaultServerConfig } from '../src/cli/mcp-config.js';
 import { AegisxError } from '../src/core/types.js';
 
@@ -491,5 +498,84 @@ cliSuite('mcp-config --project-rules (built CLI)', () => {
     const out = runCli(['mcp-config', '--agent', 'claude'], workspace);
     expect(out).toContain('mcpServers');
     expect(fs.existsSync(path.join(workspace, 'AGENTS.md'))).toBe(false);
+  });
+});
+
+describe('orphaned backup sweep', () => {
+  const home = (): string => path.join(workspace, 'home');
+
+  function write(rel: string, content: string): string {
+    const file = path.join(home(), rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    return file;
+  }
+
+  it('happy: a backup whose original is gone is debris — removed, and so is the phantom dir', () => {
+    const backup = write(path.join('.codex', 'config.toml.aegisx-bak'), '[mcp_servers."aegisx-memory"]\ncommand = "node"\n');
+    const sweep = sweepOrphanedBackups({ homeDir: home() });
+    expect(sweep.removed).toContain(backup);
+    expect(fs.existsSync(backup)).toBe(false);
+    // The directory existed only to hold our debris; leaving it reads as
+    // "this agent is installed here" in every later inspection.
+    expect(fs.existsSync(path.join(home(), '.codex'))).toBe(false);
+    expect(sweep.prunedDirs).toContain(path.join(home(), '.codex'));
+  });
+
+  it('nested: emptying ~/.codeium/windsurf also clears the ~/.codeium husk', () => {
+    write(path.join('.codeium', 'windsurf', 'mcp_config.json.aegisx-bak'), '{"mcpServers":{"aegisx-memory":{}}}');
+    const sweep = sweepOrphanedBackups({ homeDir: home() });
+    expect(fs.existsSync(path.join(home(), '.codeium', 'windsurf'))).toBe(false);
+    expect(fs.existsSync(path.join(home(), '.codeium'))).toBe(false);
+    expect(sweep.prunedDirs).toHaveLength(2);
+  });
+
+  it('deeper: a rules backup under ~/.cursor/rules is swept and both levels pruned', () => {
+    // Cursor keeps its rules at ~/.cursor/rules/<name>.mdc — one level below
+    // the MCP config, so a scan that only looked at ~/.cursor would miss it.
+    write(path.join('.cursor', 'rules', 'aegisx-memory.mdc.aegisx-bak'), '---\nalwaysApply: true\n---\naegisx-memory\n');
+    const sweep = sweepOrphanedBackups({ homeDir: home() });
+    expect(sweep.removed).toHaveLength(1);
+    expect(fs.existsSync(path.join(home(), '.cursor', 'rules'))).toBe(false);
+    expect(fs.existsSync(path.join(home(), '.cursor'))).toBe(false);
+  });
+
+  it('negative: a backup whose original still exists is a live safety net — never touched', () => {
+    const config = write(path.join('.cursor', 'mcp.json'), '{"mcpServers":{"aegisx-memory":{}}}');
+    const backup = write(path.join('.cursor', 'mcp.json.aegisx-bak'), '{"mcpServers":{}}');
+    const sweep = sweepOrphanedBackups({ homeDir: home() });
+    expect(sweep.removed).toHaveLength(0);
+    expect(fs.existsSync(backup)).toBe(true);
+    expect(fs.existsSync(config)).toBe(true);
+  });
+
+  it('negative: an orphan holding content that is not ours is kept and reported, never destroyed', () => {
+    // Skipping this guard would make the sweep a data-loss tool: an orphan can
+    // be the user's only copy of something aegisx cannot identify.
+    const backup = write(path.join('.claude', 'CLAUDE.md.aegisx-bak'), '# My own house rules\n\nBe concise.\n');
+    const sweep = sweepOrphanedBackups({ homeDir: home() });
+    expect(fs.existsSync(backup)).toBe(true);
+    expect(sweep.kept).toContain(backup);
+    expect(sweep.removed).toHaveLength(0);
+    expect(describeSweep(sweep)).toContain('not ours');
+  });
+
+  it('idempotent: a second sweep finds nothing, and missing directories never throw', () => {
+    write(path.join('.gemini', 'settings.json.aegisx-bak'), '{"mcpServers":{"aegisx-memory":{}}}');
+    const first = sweepOrphanedBackups({ homeDir: home() });
+    const second = sweepOrphanedBackups({ homeDir: home() });
+    expect(first.removed).toHaveLength(1);
+    expect(second.removed).toHaveLength(0);
+    expect(second.prunedDirs).toHaveLength(0);
+    expect(describeSweep(second)).toBeNull();
+  });
+
+  it('scoped: an empty managed directory is never pruned, only one this sweep emptied', () => {
+    // ~/.cursor exists but holds nothing of ours: nothing was swept there, so
+    // the sweep has no business removing the user's directory.
+    fs.mkdirSync(path.join(home(), '.cursor'), { recursive: true });
+    const sweep = sweepOrphanedBackups({ homeDir: home() });
+    expect(sweep.prunedDirs).toHaveLength(0);
+    expect(fs.existsSync(path.join(home(), '.cursor'))).toBe(true);
   });
 });

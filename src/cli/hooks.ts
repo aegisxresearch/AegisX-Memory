@@ -12,7 +12,8 @@
  *                       first (deadline enforced between files — the scan is
  *                       synchronous by design, so there is no fake abort).
  *                       --json: Claude Code SessionStart output — the same
- *                       block inside hookSpecificOutput.additionalContext.
+ *                       block inside hookSpecificOutput.additionalContext;
+ *                       --client hermes emits Hermes' bare {"context": …}.
  *   hook session-end    human: one-line save reminder on stderr, stdout empty.
  *                       --json: Claude Code Stop output {decision:"block",
  *                       reason} so the agent itself is told to save the
@@ -44,9 +45,20 @@ export const MIN_HOOK_DEADLINE_MS = 250;
 
 export type HookEvent = 'session-start' | 'session-end' | 'post-edit';
 
+/** Which agent's hook protocol to emit. The two dialects differ in ways that
+ *  fail *silently* when crossed — Hermes' `_parse_context` reads a top-level
+ *  `{"context": …}` and never looks at Claude's `hookSpecificOutput`, so a
+ *  mismatched payload injects nothing and logs nothing. */
+export type HookClient = 'claude' | 'hermes';
+
 export function parseHookEvent(value: string): HookEvent {
   if (value === 'session-start' || value === 'session-end' || value === 'post-edit') return value;
   throw new AegisxError('user', `unknown hook event "${value}"; expected one of: session-start, session-end, post-edit`);
+}
+
+export function parseHookClient(value: string): HookClient {
+  if (value === 'claude' || value === 'hermes') return value;
+  throw new AegisxError('user', `unknown hook client "${value}"; expected one of: claude, hermes`);
 }
 
 export function positiveIntArg(name: string): (value: string) => number {
@@ -312,13 +324,18 @@ const EMPTY_CONTEXT_HINT =
   'AegisX-Memory: no memory stored for this repository yet. It will fill as facts are remembered and sessions are saved.';
 
 /** Render one hook event for one mode. Pure (no process I/O) so the protocol
- *  is testable without spawning the CLI. */
-export function renderHook(event: HookEvent, r: SessionStartResult | SessionEndResult | PostEditResult, json: boolean): HookRunOutcome {
+ *  is testable without spawning the CLI. `client` picks the wire dialect. */
+export function renderHook(event: HookEvent, r: SessionStartResult | SessionEndResult | PostEditResult, json: boolean, client: HookClient = 'claude'): HookRunOutcome {
   if (event === 'session-start') {
     const r0 = r as SessionStartResult;
     const parts = [r0.indexNote, r0.context].filter((s): s is string => s !== null && s !== '');
     if (json) {
       const ctx = parts.length === 0 ? EMPTY_CONTEXT_HINT : `AegisX-Memory (project memory, local):\n${parts.join('\n')}`;
+      // Hermes reads a bare top-level `context` key; Claude Code reads
+      // `hookSpecificOutput`. Emitting the wrong one is a silent no-op.
+      if (client === 'hermes') {
+        return { exitCode: 0, stdout: `${JSON.stringify({ context: ctx })}\n`, stderr: '' };
+      }
       return {
         exitCode: 0,
         stdout: `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } }, null, 2)}\n`,
@@ -330,13 +347,14 @@ export function renderHook(event: HookEvent, r: SessionStartResult | SessionEndR
   if (event === 'session-end') {
     const r1 = r as SessionEndResult;
     if (json) {
-      // Stop-hook contract: decision block + reason makes the agent act on the
-      // reminder instead of merely displaying it.
-      return {
-        exitCode: 0,
-        stdout: `${JSON.stringify({ decision: 'block', reason: r1.reminder }, null, 2)}\n`,
-        stderr: '',
-      };
+      // Stop-hook contract: the agent is told to act on the reminder instead
+      // of merely displaying it. Claude Code blocks on decision/reason;
+      // Hermes' `_parse_pre_verify` reads action/message (it also accepts the
+      // Claude pair, but its native shape is the explicit one).
+      const payload = client === 'hermes'
+        ? { action: 'continue', message: r1.reminder }
+        : { decision: 'block', reason: r1.reminder };
+      return { exitCode: 0, stdout: `${JSON.stringify(payload, null, 2)}\n`, stderr: '' };
     }
     return { exitCode: 0, stdout: '', stderr: `${r1.reminder}\n` };
   }
@@ -347,11 +365,12 @@ export function renderHook(event: HookEvent, r: SessionStartResult | SessionEndR
 
 /** Facade used by the CLI action: computes the result and renders it, mapping
  *  every failure to exit 0 + a stderr note — hooks degrade, never error out. */
-export function runHook(event: HookEvent, opts: { json: boolean; repo?: string; budget?: number; deadlineMs?: number }): HookRunOutcome {
+export function runHook(event: HookEvent, opts: { json: boolean; repo?: string; budget?: number; deadlineMs?: number; client?: HookClient }): HookRunOutcome {
+  const client = opts.client ?? 'claude';
   try {
-    if (event === 'session-start') return renderHook(event, hookSessionStart(opts), opts.json);
-    if (event === 'session-end') return renderHook(event, hookSessionEnd(opts), opts.json);
-    return renderHook(event, hookPostEdit(opts), opts.json);
+    if (event === 'session-start') return renderHook(event, hookSessionStart(opts), opts.json, client);
+    if (event === 'session-end') return renderHook(event, hookSessionEnd(opts), opts.json, client);
+    return renderHook(event, hookPostEdit(opts), opts.json, client);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { exitCode: 0, stdout: '', stderr: `aegisx-memory: ${event} skipped (${msg})\n` };

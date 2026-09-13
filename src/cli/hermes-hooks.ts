@@ -16,6 +16,10 @@
  *
  * Scripts carry the same `aegisx-memory:*` markers the Claude installer uses,
  * so idempotence survives re-formatting of config.yaml by other tools.
+ *
+ * Both scripts pass `--client hermes` to `aegisxmemory hook`: Claude Code and
+ * Hermes read different JSON keys, and a payload in the wrong dialect injects
+ * nothing while still exiting 0 — the failure a live test is needed to see.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -84,7 +88,7 @@ CWD=$(printf '%s' "$RAW" | /usr/bin/env node -e '
   });
 ' 2>/dev/null)
 cd "\${CWD:-\$PWD}" 2>/dev/null || true
-exec ${cmd} hook session-start --json
+exec ${cmd} hook session-start --json --client hermes
 `,
     },
     {
@@ -94,11 +98,12 @@ exec ${cmd} hook session-start --json
       json: false,
       body: `#!/usr/bin/env sh
 # aegisx-memory:pre-verify — when the agent edited code and is about to finish,
-# nudge it once to save the handoff. Hermes accepts the Claude Stop payload
-# {"decision":"block","reason":…} directly, so the reminder reaches the model
-# verbatim. Exit 0 always: a hook must never fail the turn it guards.
+# nudge it once to save the handoff. --client hermes emits the native
+# {"action":"continue","message":…} that Hermes' pre_verify parser reads, so
+# reminder reaches the model verbatim. Exit 0 always: a hook must never fail
+# the turn it guards.
 exec 2>/dev/null
-exec ${cmd} hook session-end --json
+exec ${cmd} hook session-end --json --client hermes
 `,
     },
   ];
@@ -161,12 +166,28 @@ export function installHermesHooks(configFile: string, opts: { hooksDir?: string
     return { action: 'error', path: configFile, backup: null, detail: `"hooks" exists but is not a YAML mapping — merge manually; nothing was written` };
   }
 
-  // Scripts: content-addressed rewrite — if the marker is present but the body
-  // drifted (upgrade), the new text replaces it; that is the upgrade path.
+  // Scripts: content-addressed rewrite — a body that drifted (upgrade) is
+  // replaced; an identical body is left byte-for-byte alone. Touching the
+  // mtime on every run matters: Hermes records `script_mtime_at_approval`
+  // when it approves a hook and compares the two as ISO strings, so an
+  // unconditional rewrite makes `hermes hooks doctor` warn "script modified
+  // since approval" after a run that changed nothing. A real content change
+  // still bumps the mtime, where that warning is true and worth acting on.
   fs.mkdirSync(hooksDir, { recursive: true });
+  let scriptsRewritten = 0;
   for (const s of scripts) {
     const file = path.join(hooksDir, s.file);
-    fs.writeFileSync(file, s.body, { mode: 0o755 });
+    let current: string | null = null;
+    try {
+      current = fs.readFileSync(file, 'utf8');
+    } catch {
+      current = null; // missing or unreadable: write it
+    }
+    if (current !== s.body) {
+      fs.writeFileSync(file, s.body, { mode: 0o755 });
+      scriptsRewritten++;
+    }
+    // chmod updates ctime, never mtime — safe to enforce every run.
     fs.chmodSync(file, 0o755);
   }
 
@@ -193,11 +214,18 @@ export function installHermesHooks(configFile: string, opts: { hooksDir?: string
   fs.mkdirSync(path.dirname(configFile), { recursive: true });
   fs.writeFileSync(configFile, doc.toString());
 
-  const unchanged = JSON.stringify(hooks) === before && existed;
+  const configUnchanged = JSON.stringify(hooks) === before;
+  const unchanged = configUnchanged && existed && scriptsRewritten === 0;
   return {
     action: unchanged ? 'unchanged' : existed ? 'merged' : 'created',
     path: configFile,
     backup,
-    detail: unchanged ? 'hooks already installed — nothing written' : backup === null ? 'hook scripts written + hooks block created' : `previous config kept at ${backup}`,
+    detail: unchanged
+      ? 'hooks already installed — nothing written'
+      : configUnchanged && existed && scriptsRewritten > 0
+        ? `hook scripts refreshed (${scriptsRewritten}) — config unchanged`
+        : backup === null
+          ? 'hook scripts written + hooks block created'
+          : `previous config kept at ${backup}`,
   };
 }

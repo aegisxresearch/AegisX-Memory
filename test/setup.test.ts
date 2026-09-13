@@ -6,10 +6,15 @@ import { runSetupWizard } from '../src/cli/setup.js';
 import { parse as parseYaml } from 'yaml';
 
 let workspace: string;
+let realHomedir: typeof os.homedir;
 const prevEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'aegisx-wizard-'));
+  // The wizard sweeps orphaned backups under the home directory before it
+  // writes anything — that home must be the workspace, never the real one.
+  realHomedir = os.homedir;
+  os.homedir = () => workspace;
   for (const key of ['HERMES_HOME', 'CLAUDE_CONFIG']) {
     prevEnv[key] = process.env[key];
     process.env[key] = path.join(workspace, key);
@@ -17,6 +22,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  os.homedir = realHomedir;
   fs.rmSync(workspace, { recursive: true, force: true });
   for (const [key, value] of Object.entries(prevEnv)) {
     if (value === undefined) delete process.env[key];

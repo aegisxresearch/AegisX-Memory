@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { normalizeRepoPath } from '../core/paths.js';
 import { AegisxError } from '../core/types.js';
-import { SETUP_AGENTS } from './auto-setup.js';
+import { SETUP_AGENTS, detectAgentPresence } from './auto-setup.js';
 
 export type CheckStatus = 'pass' | 'warn' | 'fail';
 
@@ -467,12 +467,15 @@ function checkMcpRegistrations(repoAbsPath: string | null): Check[] {
             fix: 'rebuild with `npm run build` or fix the path via `aegisxmemory mcp-config`',
           },
   );
-  // "Installed" but never wired: the CLI works, the agent cannot call it. Only
-  // the agent's *config file* is proof of registration — the binary existing
-  // proves nothing about the client, and users report "it does not respond"
-  // for exactly this state.
+  // Present but never wired: the CLI works, the agent cannot call it. Only the
+  // agent's *config file* is proof of registration — the binary existing proves
+  // nothing about the client, and users report "it does not respond" for
+  // exactly this state. Presence is checked separately from registration, and
+  // deliberately: threatening to fix an agent that is not on this machine is
+  // noise that trains people to ignore the report.
+  const present = new Set(detectAgentPresence(repoAbsPath ?? process.cwd()));
   const unregistered = SETUP_AGENTS.filter(
-    (agent) => !regs.some((reg) => reg.agent === agent),
+    (agent) => present.has(agent) && !regs.some((reg) => reg.agent === agent),
   );
   if (unregistered.length > 0) {
     checks.push({
@@ -481,6 +484,16 @@ function checkMcpRegistrations(repoAbsPath: string | null): Check[] {
       detail: `installed but not registered in: ${unregistered.join(', ')}`,
       fix: 'run `aegisxmemory setup` (or `mcp-config --install --agent ' + unregistered[0] + '`) to register',
     });
+  } else {
+    // Report the probe's own result rather than staying silent. Silence reads
+    // as "the check did not run", and a reader cannot tell a machine with one
+    // agent from a machine whose other agents are simply not wired yet — so
+    // name both what was found and what was looked for and not found.
+    const detected = SETUP_AGENTS.filter((agent) => present.has(agent));
+    const notInstalled = SETUP_AGENTS.filter((agent) => !present.has(agent));
+    const parts = [`detected on this machine: ${detected.join(', ') || 'none'} (all registered)`];
+    if (notInstalled.length > 0) parts.push(`not installed: ${notInstalled.join(', ')}`);
+    checks.push({ name: 'mcp registration coverage', status: 'pass', detail: parts.join(' · ') });
   }
   return checks;
 }

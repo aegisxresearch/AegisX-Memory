@@ -10,6 +10,7 @@ import {
   hookSessionEnd,
   hookSessionStart,
   installClaudeHooks,
+  parseHookClient,
   parseHookEvent,
   positiveIntArg,
   repoFromStdinJson,
@@ -97,6 +98,31 @@ describe('hook session-start', () => {
     expect(parsed.hookSpecificOutput.additionalContext).toContain('No indexed symbols');
   });
 
+  it('hermes dialect: emits the bare {context} Hermes reads — hookSpecificOutput injects nothing there', () => {
+    const outcome = runHook('session-start', { json: true, client: 'hermes', repo: repoDir });
+    expect(outcome.exitCode).toBe(0);
+    const parsed = JSON.parse(outcome.stdout) as Record<string, unknown>;
+    expect(typeof parsed['context']).toBe('string');
+    expect(parsed['context'] as string).toContain('function login');
+    // Claude's key is meaningless to Hermes' `_parse_context`; its presence
+    // would mean the wrong dialect shipped and memory silently stopped loading.
+    expect(parsed['hookSpecificOutput']).toBeUndefined();
+  });
+
+  it('hermes dialect: an empty repo still answers truthfully instead of injecting a blank', () => {
+    const emptyRepo = path.join(workspace, 'empty-hermes');
+    fs.mkdirSync(emptyRepo);
+    const outcome = runHook('session-start', { json: true, client: 'hermes', repo: emptyRepo });
+    const parsed = JSON.parse(outcome.stdout) as { context: string };
+    expect(parsed.context).toContain('auto-indexed 0 files');
+  });
+
+  it('negative: an unknown --client is a user error, never a silent fallback', () => {
+    expect(() => parseHookClient('emacs')).toThrow(AegisxError);
+    expect(parseHookClient('claude')).toBe('claude');
+    expect(parseHookClient('hermes')).toBe('hermes');
+  });
+
   it('happy: a generous deadline indexes normally (the cap only binds when spent)', () => {
     expect(hookSessionStart({ repo: repoDir, deadlineMs: 60_000 }).indexed).toBe(true);
   });
@@ -131,6 +157,13 @@ describe('hook session-end', () => {
     const parsed = JSON.parse(outcome.stdout) as { decision: string; reason: string };
     expect(parsed.decision).toBe('block');
     expect(parsed.reason).toContain('aegisxmemory_save');
+  });
+
+  it('hermes dialect: pre_verify reads action/message, so the nudge uses that shape', () => {
+    const outcome = runHook('session-end', { json: true, client: 'hermes', repo: repoDir });
+    const parsed = JSON.parse(outcome.stdout) as { action: string; message: string };
+    expect(parsed.action).toBe('continue');
+    expect(parsed.message).toContain('aegisxmemory_save');
   });
 
   it('happy: after a saved handoff the reminder knows the repo has history', () => {

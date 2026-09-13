@@ -94,22 +94,65 @@ describe('hermes hooks installer', () => {
 
   it('produces scripts whose exec line carries the real command (no BIN indirection)', () => {
     const [recall, nudge] = hermesHookScripts('aegisxmemory-fake');
-    expect(recall.body).toMatch(/^exec aegisxmemory-fake hook session-start --json$/m);
-    expect(nudge.body).toMatch(/^exec aegisxmemory-fake hook session-end --json$/m);
+    if (recall === undefined || nudge === undefined) throw new Error('expected the recall + save-nudge scripts');
+    expect(recall.body).toMatch(/^exec aegisxmemory-fake hook session-start --json --client hermes$/m);
+    expect(nudge.body).toMatch(/^exec aegisxmemory-fake hook session-end --json --client hermes$/m);
     expect(recall.body).toContain('cd "${CWD:-$PWD}"');
+  });
+
+  it('an idempotent re-install never touches the script mtime (no false drift warning)', () => {
+    // Hermes stores script_mtime_at_approval and compares it to the live mtime
+    // as an ISO string; rewriting identical bytes would make `hermes hooks
+    // doctor` cry "script modified since approval" after a no-op run.
+    const dir = path.join(workspace, 'ah-mtime');
+    const cfg = path.join(workspace, 'cfg-mtime.yaml');
+    installHermesHooks(cfg, { hooksDir: dir, bin: 'aegisxmemory-fake' });
+    const script = path.join(dir, 'aegisx-recall.sh');
+    // Pin an old mtime, then compare the two reads: `mtimeMs` is a float
+    // derived from nanosecond storage, so asserting against a fresh Date would
+    // be a precision coin-flip. Identity across the call is the property.
+    const pinned = new Date(Date.now() - 60_000);
+    fs.utimesSync(script, pinned, pinned);
+    const before = fs.statSync(script).mtimeMs;
+
+    const second = installHermesHooks(cfg, { hooksDir: dir, bin: 'aegisxmemory-fake' });
+    expect(fs.statSync(script).mtimeMs).toBe(before);
+    expect(second.detail).toContain('nothing written');
+  });
+
+  it('a changed body is rewritten and reported (the upgrade path)', () => {
+    const dir = path.join(workspace, 'ah-upgrade');
+    const cfg = path.join(workspace, 'cfg-upgrade.yaml');
+    installHermesHooks(cfg, { hooksDir: dir, bin: 'aegisxmemory-old' });
+    const script = path.join(dir, 'aegisx-recall.sh');
+    expect(fs.readFileSync(script, 'utf8')).toContain('aegisxmemory-old');
+
+    const upgraded = installHermesHooks(cfg, { hooksDir: dir, bin: 'aegisxmemory-new' });
+    expect(fs.readFileSync(script, 'utf8')).toContain('aegisxmemory-new');
+    expect(upgraded.detail).toContain('scripts refreshed');
+  });
+
+  it('scripts speak the Hermes dialect, not Claude\u2019s (the silent no-injection bug)', () => {
+    // Hermes' `_parse_context` reads a top-level `context` key and never looks
+    // at `hookSpecificOutput`, so a Claude-shaped payload injects nothing while
+    // still exiting 0 — memory dies silently. The flag must ride on every exec.
+    for (const script of hermesHookScripts('aegisxmemory-fake')) {
+      expect(script.body).toContain('--client hermes');
+    }
   });
 
   it('scripts run end-to-end against the built bundle (recall emits SessionStart JSON)', () => {
     // Exercise the actual generated text with sh to catch quoting drift: the
     // regression this guards is the BIN= temp-env trap that made exit 127.
     const [recall] = hermesHookScripts(`node ${JSON.stringify(process.execPath.includes('node') ? path.resolve('dist/cli/index.js') : 'dist/cli/index.js')}`);
+    if (recall === undefined) throw new Error('expected the recall script');
     const script = path.join(workspace, 'recall-probe.sh');
     fs.writeFileSync(script, recall.body);
     fs.chmodSync(script, 0o755);
     // The DB is empty here; the hook must still exit 0 and print valid JSON.
     const out = execFileSync('sh', [script], { input: JSON.stringify({ cwd: workspace }), encoding: 'utf8', env: { ...process.env } });
-    const parsed = JSON.parse(out) as { hookSpecificOutput: { hookEventName: string } };
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    const parsed = JSON.parse(out) as { context: string };
+    expect(typeof parsed.context).toBe('string');
   });
 });
 
@@ -132,6 +175,7 @@ describe('auto lifecycle', () => {
       dashPort: await reservePort(3500),
       setup: false, // hermetic: no agent config writes in tests
       projectDir,
+      homeDir: path.join(workspace, 'home'), // the sweep stays in the workspace
     });
     expect(report.mcpHttp).not.toBeNull();
     expect(report.dashboard).not.toBeNull();
@@ -163,8 +207,8 @@ describe('auto lifecycle', () => {
   }, 30_000);
 
   it('runAuto restart is idempotent: a second run replaces the first daemons', async () => {
-    const report1 = await runAuto({ mcpPort: await reservePort(3600), dashPort: await reservePort(3700), setup: false });
-    const report2 = await runAuto({ mcpPort: await reservePort(3600), dashPort: await reservePort(3700), setup: false });
+    await runAuto({ mcpPort: await reservePort(3600), dashPort: await reservePort(3700), setup: false, homeDir: path.join(workspace, 'home') });
+    const report2 = await runAuto({ mcpPort: await reservePort(3600), dashPort: await reservePort(3700), setup: false, homeDir: path.join(workspace, 'home') });
     expect(report2.notes.some((n) => n.includes('stopped 1 daemon(s)') || n.includes('stopped 2 daemon(s)'))).toBe(true);
     expect(report2.mcpHttp).not.toBeNull();
     const { autoDown } = await import('../src/cli/auto.js');

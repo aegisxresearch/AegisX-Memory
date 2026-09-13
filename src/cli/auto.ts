@@ -201,6 +201,8 @@ export interface AutoOptions {
   projectDir?: string;
   /** Env for the spawned daemons (tests pass a sandboxed AEGISX_HOME). */
   env?: NodeJS.ProcessEnv;
+  /** Home the leftover-backup sweep runs under (tests pass a sandbox). */
+  homeDir?: string;
   /** Injectable seams (tests): pretend agents are installed without touching
    *  real home directories. */
   detected?: SetupAgent[];
@@ -216,6 +218,12 @@ export interface AutoReport {
 /** The full automatic onboarding. See the module doc for the contract. */
 export async function runAuto(opts: AutoOptions): Promise<AutoReport> {
   const notes: string[] = [];
+
+  // Same sweep as `setup`: a backup left behind by an uninstall can never be
+  // restored, and it keeps a directory alive that reads as an installed agent.
+  const { sweepOrphanedBackups, describeSweep } = await import('./auto-setup.js');
+  const sweepLine = describeSweep(sweepOrphanedBackups({ projectDir: opts.projectDir, homeDir: opts.homeDir }));
+  if (sweepLine !== null) notes.push(sweepLine);
 
   /* 1 — wire the agents that exist on this machine. */
   const probes = opts.detected !== undefined

@@ -19,6 +19,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { SETUP_AGENTS, configPathFor, describeProjectRulesResult, describeResult, describeRulesResult, detectInstalledAgents, installForAgent, installProjectRules, installRulesForAgent, type SetupAgent } from './auto-setup.js';
 import { claudeSettingsPath, describeHookInstall, installClaudeHooks } from './hooks.js';
 import { installHermesHooks } from './hermes-hooks.js';import { defaultServerConfig } from './mcp-config.js';
+import { describeSweep, sweepOrphanedBackups } from './auto-setup.js';
 import type { Engine } from '../core/engine.js';
 
 export interface SetupChoice {
@@ -40,6 +41,12 @@ export interface SetupOptions {
    * can simulate an installed agent without creating real home files.
    */
   detected?: SetupAgent[];
+  /**
+   * Home directory the leftover-backup sweep runs under. Defaults to the real
+   * home; programmatic callers pass a sandbox so a test can never delete files
+   * outside its workspace.
+   */
+  homeDir?: string;
   /**
    * Non-interactive mode (`setup --yes`): skip every question and apply the
    * given choices. Agents default to hermes when omitted; rules default to
@@ -137,6 +144,12 @@ export async function runSetupWizard(engine?: Engine, options: SetupOptions = {}
   // One detection pass for every mode: `--yes` without explicit agents, the
   // interactive default, and the non-TTY fallback all prefer what is actually
   // installed over a hardcoded guess.
+  // Debris from an earlier uninstall is swept before anything is written: an
+  // orphaned backup can never be restored, and it keeps a phantom directory
+  // alive that later inspections mistake for an installed agent.
+  const sweepLine = describeSweep(sweepOrphanedBackups({ projectDir: options.projectDir, homeDir: options.homeDir }));
+  if (sweepLine !== null) say(`${sweepLine}\n\n`);
+
   const detected = options.detected ?? detectInstalledAgents(options.projectDir).filter((p) => p.installed).map((p) => p.agent);
   let choice: SetupChoice;
 

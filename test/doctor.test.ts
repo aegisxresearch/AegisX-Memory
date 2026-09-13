@@ -367,23 +367,77 @@ describe('doctor — registration coverage', () => {
     }
   });
 
-  it('warn: one agent registered names the others as installed-but-unregistered', () => {
+  it('warn: names only the present-but-unregistered agents, never the absent ones', () => {
     writeHermesRegistration();
     delete process.env['CLAUDE_CONFIG'];
     const realHomedir = os.homedir;
+    const realPath = process.env['PATH'];
     os.homedir = () => homeDir; // hermetic — never read the machine's real home
+    process.env['PATH'] = path.join(workspace, 'empty-bin'); // no agent CLIs here
     try {
-      const report = runDoctor(dbFile, null);
+      // Present on this machine: Claude and Cursor have a config file each.
+      fs.mkdirSync(path.join(homeDir, '.claude'), { recursive: true });
+      fs.writeFileSync(path.join(homeDir, '.claude', 'claude_desktop_config.json'), '{}');
+      fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
+      fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), '{}');
+
+      const report = runDoctor(dbFile, repoDir);
       const coverage = report.checks.find((c) => c.name === 'mcp registration coverage');
       expect(coverage).toBeDefined();
       expect(coverage?.status).toBe('warn');
       expect(coverage?.detail).toContain('claude');
       expect(coverage?.detail).toContain('cursor');
-      expect(coverage?.detail).toContain('gemini');
-      expect(coverage?.detail).toContain('codex');
-      expect(coverage?.detail).not.toContain('hermes');
+      // Absent agents are not the user's problem to fix — suggesting them is noise.
+      expect(coverage?.detail).not.toContain('gemini');
+      expect(coverage?.detail).not.toContain('codex');
+      expect(coverage?.detail).not.toContain('vscode');
+      expect(coverage?.detail).not.toContain('hermes'); // registered
     } finally {
       os.homedir = realHomedir;
+      process.env['PATH'] = realPath;
+    }
+  });
+
+  it('negative: a machine with only Hermes is never nagged about agents it does not have', () => {
+    writeHermesRegistration();
+    delete process.env['CLAUDE_CONFIG'];
+    const realHomedir = os.homedir;
+    const realPath = process.env['PATH'];
+    os.homedir = () => homeDir; // empty: no other agent has ever been installed
+    process.env['PATH'] = path.join(workspace, 'empty-bin');
+    try {
+      const report = runDoctor(dbFile, repoDir);
+      const coverage = report.checks.find((c) => c.name === 'mcp registration coverage');
+      // Not a warn — and not silence either: the pass line names what the
+      // probe found and, crucially, what it looked for and did not find.
+      expect(coverage?.status).toBe('pass');
+      expect(coverage?.detail).toContain('detected on this machine: hermes');
+      expect(coverage?.detail).toContain('not installed: claude, cursor, gemini, codex, windsurf, vscode');
+      expect(report.checks.find((c) => c.name.startsWith('mcp: '))).toBeDefined();
+    } finally {
+      os.homedir = realHomedir;
+      process.env['PATH'] = realPath;
+    }
+  });
+
+  it('warn: an agent whose CLI is on PATH but not configured for MCP is still named', () => {
+    writeHermesRegistration();
+    delete process.env['CLAUDE_CONFIG'];
+    const realHomedir = os.homedir;
+    const realPath = process.env['PATH'];
+    os.homedir = () => homeDir;
+    const binDir = path.join(workspace, 'bin');
+    fs.mkdirSync(binDir);
+    fs.writeFileSync(path.join(binDir, 'gemini'), '#!/bin/sh\n', { mode: 0o755 });
+    process.env['PATH'] = binDir;
+    try {
+      const report = runDoctor(dbFile, repoDir);
+      const coverage = report.checks.find((c) => c.name === 'mcp registration coverage');
+      expect(coverage?.detail).toContain('gemini');
+      expect(coverage?.detail).not.toContain('cursor'); // no CLI, no config
+    } finally {
+      os.homedir = realHomedir;
+      process.env['PATH'] = realPath;
     }
   });
 
@@ -412,7 +466,12 @@ describe('doctor — registration coverage', () => {
     os.homedir = () => workspace;
     try {
       const report = runDoctor(dbFile, scratchRepo);
-      expect(report.checks.find((c) => c.name === 'mcp registration coverage')).toBeUndefined();
+      // Every agent is registered, so nothing to fix — the check still reports
+      // itself, explaining why there is no warning.
+      const coverage = report.checks.find((c) => c.name === 'mcp registration coverage');
+      expect(coverage?.status).toBe('pass');
+      expect(coverage?.detail).toContain('all registered');
+      expect(coverage?.detail).not.toContain('not installed'); // all seven are here
       expect(report.checks.filter((c) => c.name.startsWith('mcp: '))).toHaveLength(7);
     } finally {
       os.homedir = realHomedir;

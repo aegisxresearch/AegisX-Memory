@@ -88,29 +88,229 @@ export function detectInstalledAgents(projectDir?: string): AgentProbe[] {
   });
 }
 
-/** Default config file location per agent — mirrors doctor.ts detection. */
-export function configPathFor(agent: SetupAgent): string {
+/** The CLI each agent ships. A desktop install that never touches PATH is
+ *  still caught by its config file below; this catches the converse — an
+ *  agent that is installed but not yet configured for MCP anywhere. */
+const AGENT_BINARIES: Record<SetupAgent, readonly string[]> = {
+  hermes: ['hermes'],
+  claude: ['claude'],
+  cursor: ['cursor', 'cursor-agent'],
+  gemini: ['gemini'],
+  codex: ['codex'],
+  windsurf: ['windsurf'],
+  vscode: ['code', 'code-insiders'],
+};
+
+/** Is `bin` an executable file in one of the PATH entries? Windows shims get
+ *  their usual suffixes tried, because `code` is really `code.cmd` there. */
+export function binaryOnPath(bin: string, pathValue: string = process.env['PATH'] ?? ''): boolean {
+  const suffixes = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : [''];
+  return pathValue.split(path.delimiter).some(
+    (dir) =>
+      dir !== '' &&
+      suffixes.some((suffix) => {
+        try {
+          return fs.statSync(path.join(dir, bin + suffix)).isFile();
+        } catch {
+          return false;
+        }
+      }),
+  );
+}
+
+/**
+ * Agents that are actually on this machine — the only ones a report may tell
+ * the user to wire up.
+ *
+ * Deliberately *not* "does the config directory exist": that directory can be
+ * left behind by this tool itself (an install/uninstall round-trip leaves a
+ * directory holding nothing but `.aegisx-bak` files), which would resurrect
+ * the exact false alarm this probe exists to remove. The `configPathFor` *file*
+ * is a stronger signal — it exists only once that client has been configured —
+ * and the shipped CLI covers the installed-but-unconfigured case.
+ */
+export function detectAgentPresence(projectDir?: string, pathValue?: string): SetupAgent[] {
+  return SETUP_AGENTS.filter((agent) => {
+    const configPath =
+      agent === 'vscode' && projectDir !== undefined
+        ? path.join(projectDir, '.vscode', 'mcp.json')
+        : configPathFor(agent);
+    try {
+      if (fs.statSync(configPath).isFile()) return true;
+    } catch {
+      // Not configured here — fall through to the binary probe.
+    }
+    return AGENT_BINARIES[agent].some((bin) => binaryOnPath(bin, pathValue));
+  });
+}
+
+/* ------------------------------------------------- orphaned backup sweep */
+
+const BACKUP_SUFFIX = '.aegisx-bak';
+
+/**
+ * Every directory this tool can leave a backup in. The sweep is scoped to
+ * this list on purpose: hunting `*.aegisx-bak` through `$HOME` recursively
+ * would be one regex away from deleting files aegisx never touched.
+ *
+ * The windsurf nest is listed before its parent so a single sweep can empty
+ * `~/.codeium/windsurf` and then `~/.codeium` itself.
+ */
+function managedBackupDirs(projectDir: string | undefined, home: string): string[] {
+  const dirs: string[] = [];
+  for (const agent of SETUP_AGENTS) {
+    if (agent === 'vscode') continue; // repo-scoped, added below
+    const dir = path.dirname(configPathFor(agent, home));
+    dirs.push(dir);
+    // Windsurf nests: ~/.codeium/windsurf/mcp_config.json — sweeping its own
+    // directory empty would leave ~/.codeium behind, so list the parent too.
+    if (agent === 'windsurf') dirs.push(path.dirname(dir));
+    // Rules files can sit a level deeper than the MCP config (Cursor keeps
+    // ~/.cursor/rules/<name>.mdc), so their directory needs its own entry.
+    const rules = rulesPathFor(agent, home);
+    if (rules !== null) dirs.push(path.dirname(rules));
+  }
+  if (projectDir !== undefined && projectDir !== '') {
+    // The repo-scoped artefacts: AGENTS.md and the project Claude pair.
+    dirs.push(projectDir, path.join(projectDir, '.vscode'), path.join(projectDir, '.claude'));
+  }
+  // Deepest first, so the prune pass can empty a nest and then its parent in
+  // the same sweep (Cursor's `rules/` under `.cursor`, windsurf's under
+  // `~/.codeium`) instead of leaving the outer directory behind.
+  return dirs.sort((a, b) => b.split(path.sep).length - a.split(path.sep).length);
+}
+
+/**
+ * A backup may only be swept when its content is attributable to this tool:
+ * ours name the server key or carry a rules marker, and an empty file has
+ * nothing to lose. Anything else may be the user's only copy of something we
+ * cannot identify — kept and reported instead of silently destroyed.
+ */
+function backupLooksOurs(content: string): boolean {
+  return content.trim() === '' || /aegisx/i.test(content);
+}
+
+export interface BackupSweep {
+  removed: string[];
+  kept: string[];
+  prunedDirs: string[];
+}
+
+export interface SweepOptions {
+  projectDir?: string;
+  /** Home to sweep under. Injectable so tests (and CI images) can point the
+   *  sweep at a sandbox instead of the real home directory. */
+  homeDir?: string;
+}
+
+/**
+ * Remove the backups an uninstall orphaned: a `<file>.aegisx-bak` whose
+ * `<file>` is gone can never be restored to anything, so it is debris — and
+ * worse, it keeps its directory alive, which every later inspection reads as
+ * "that agent is installed here". A backup whose original still exists is a
+ * live safety net and is never touched.
+ */
+export function sweepOrphanedBackups(opts: SweepOptions = {}): BackupSweep {
+  const home = path.resolve(opts.homeDir ?? os.homedir());
+  const dirs = managedBackupDirs(opts.projectDir, home);
+  const removed: string[] = [];
+  const kept: string[] = [];
+
+  for (const dir of dirs) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      continue; // absent or unreadable — nothing of ours to sweep
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith(BACKUP_SUFFIX)) continue;
+      const file = path.join(dir, entry);
+      const original = file.slice(0, -BACKUP_SUFFIX.length);
+      if (fs.existsSync(original)) continue; // live backup: never touch
+      let content: string;
+      try {
+        content = fs.readFileSync(file, 'utf8');
+      } catch {
+        continue;
+      }
+      if (!backupLooksOurs(content)) {
+        kept.push(file);
+        continue;
+      }
+      try {
+        fs.rmSync(file);
+        removed.push(file);
+      } catch {
+        // Permission or a race: leave it rather than claim it was removed.
+      }
+    }
+  }
+
+  // A phantom directory holding nothing but a swept backup is the artefact
+  // users actually notice. Prune only directories this run emptied, never the
+  // home directory, and never the project root.
+  const root = opts.projectDir === undefined || opts.projectDir === '' ? null : path.resolve(opts.projectDir);
+  const touched = removed.map((file) => path.dirname(path.resolve(file)));
+  const prunedDirs: string[] = [];
+  for (const dir of dirs) {
+    const resolved = path.resolve(dir);
+    if (resolved === home || resolved === root) continue;
+    const emptied = touched.some((t) => t === resolved || t.startsWith(`${resolved}${path.sep}`));
+    if (!emptied) continue;
+    try {
+      if (fs.readdirSync(resolved).length === 0) {
+        fs.rmdirSync(resolved);
+        prunedDirs.push(resolved);
+      }
+    } catch {
+      // Missing, or still holding real files — leave it alone.
+    }
+  }
+  return { removed, kept, prunedDirs };
+}
+
+/** One line for the install flows, or null when there is nothing to say. */
+export function describeSweep(sweep: BackupSweep): string | null {
+  const parts: string[] = [];
+  if (sweep.removed.length > 0) {
+    parts.push(`cleaned up ${sweep.removed.length} leftover backup(s) from an earlier uninstall`);
+  }
+  if (sweep.prunedDirs.length > 0) {
+    parts.push(`removed ${sweep.prunedDirs.length} empty director${sweep.prunedDirs.length === 1 ? 'y' : 'ies'} they were keeping alive`);
+  }
+  if (sweep.kept.length > 0) {
+    parts.push(`kept ${sweep.kept.length} backup(s) holding content that is not ours: ${sweep.kept.join(', ')}`);
+  }
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
+/** Default config file location per agent — mirrors doctor.ts detection.
+ *  `home` is injectable so a caller that must not touch the real home (the
+ *  backup sweep, tests, sandboxed tooling) can resolve the same paths against
+ *  a sandbox while every env override keeps winning, exactly as before. */
+export function configPathFor(agent: SetupAgent, home: string = os.homedir()): string {
   switch (agent) {
     case 'hermes': {
-      const home = process.env['HERMES_HOME'];
-      return home !== undefined && home !== '' ? path.join(home, 'config.yaml') : path.join(os.homedir(), '.hermes', 'config.yaml');
+      const hermesHome = process.env['HERMES_HOME'];
+      return hermesHome !== undefined && hermesHome !== '' ? path.join(hermesHome, 'config.yaml') : path.join(home, '.hermes', 'config.yaml');
     }
     case 'claude':
-      return expand(process.env['CLAUDE_CONFIG'] ?? path.join(os.homedir(), '.claude', 'claude_desktop_config.json'));
+      return expand(process.env['CLAUDE_CONFIG'] ?? path.join(home, '.claude', 'claude_desktop_config.json'));
     case 'cursor':
-      return path.join(os.homedir(), '.cursor', 'mcp.json');
+      return path.join(home, '.cursor', 'mcp.json');
     case 'gemini':
       // GEMINI_CLI_HOME points at the CLI's home directory, not the file.
       return expand(process.env['GEMINI_CLI_HOME'] !== undefined && process.env['GEMINI_CLI_HOME'] !== ''
         ? path.join(process.env['GEMINI_CLI_HOME'], 'settings.json')
-        : path.join(os.homedir(), '.gemini', 'settings.json'));
+        : path.join(home, '.gemini', 'settings.json'));
     case 'codex':
       // CODEX_HOME likewise names the directory holding config.toml.
       return expand(process.env['CODEX_HOME'] !== undefined && process.env['CODEX_HOME'] !== ''
         ? path.join(process.env['CODEX_HOME'], 'config.toml')
-        : path.join(os.homedir(), '.codex', 'config.toml'));
+        : path.join(home, '.codex', 'config.toml'));
     case 'windsurf':
-      return path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json');
+      return path.join(home, '.codeium', 'windsurf', 'mcp_config.json');
     case 'vscode':
       return path.join(process.cwd(), '.vscode', 'mcp.json');
   }
@@ -429,24 +629,24 @@ const SOUL_SEED = [
 /** Default standing-rules file per agent (SOUL.md for Hermes per docs).
  *  Agents without a known instructions file return null: the repo-level
  *  AGENTS.md (installProjectRules) is their rules carrier instead. */
-export function rulesPathFor(agent: SetupAgent): string | null {
+export function rulesPathFor(agent: SetupAgent, home: string = os.homedir()): string | null {
   switch (agent) {
     case 'hermes': {
-      const home = process.env['HERMES_HOME'];
-      return home !== undefined && home !== '' ? path.join(home, 'SOUL.md') : path.join(os.homedir(), '.hermes', 'SOUL.md');
+      const hermesHome = process.env['HERMES_HOME'];
+      return hermesHome !== undefined && hermesHome !== '' ? path.join(hermesHome, 'SOUL.md') : path.join(home, '.hermes', 'SOUL.md');
     }
     case 'claude': {
       // CLAUDE_CONFIG_DIR is a directory (Claude Code's config home) — the
       // rules file lives inside it, not at its path.
       const dir = process.env['CLAUDE_CONFIG_DIR'];
-      return expand(dir !== undefined && dir !== '' ? path.join(dir, 'CLAUDE.md') : path.join(os.homedir(), '.claude', 'CLAUDE.md'));
+      return expand(dir !== undefined && dir !== '' ? path.join(dir, 'CLAUDE.md') : path.join(home, '.claude', 'CLAUDE.md'));
     }
     case 'cursor':
-      return path.join(os.homedir(), '.cursor', 'rules', 'aegisx-memory.mdc');
+      return path.join(home, '.cursor', 'rules', 'aegisx-memory.mdc');
     case 'gemini':
       return expand(process.env['GEMINI_CLI_HOME'] !== undefined && process.env['GEMINI_CLI_HOME'] !== ''
         ? path.join(process.env['GEMINI_CLI_HOME'], 'GEMINI.md')
-        : path.join(os.homedir(), '.gemini', 'GEMINI.md'));
+        : path.join(home, '.gemini', 'GEMINI.md'));
     // Codex reads AGENTS.md natively; Windsurf/VS Code have no home-level
     // instructions file — their contract lives in the repo's AGENTS.md.
     case 'codex':

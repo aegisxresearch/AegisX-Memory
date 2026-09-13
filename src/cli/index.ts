@@ -25,6 +25,7 @@ import {
   claudeSettingsPath,
   describeHookInstall,
   installClaudeHooks,
+  parseHookClient,
   parseHookEvent,
   positiveIntArg,
   repoFromStdinJson,
@@ -530,12 +531,13 @@ program
   .description('agent lifecycle hooks: memory loads and the save reminder fire without relying on model compliance')
   .argument('<event>', 'session-start | session-end | post-edit')
   .option('--json', 'machine-readable protocol output (Claude Code SessionStart/Stop/PostToolUse JSON)', false)
+  .option('--client <name>', 'hook dialect: claude (default) | hermes', 'claude')
   .option('--repo <path>', 'repo root (default: resolve from stdin JSON cwd, else process cwd)')
   .option('--budget <n>', 'session-start token budget (a target; the floor can exceed it)', intArg, DEFAULT_TOKEN_BUDGET)
   .option('--deadline <ms>', 'max time for the capped auto-index/post-edit scan (default: 10s session-start, 15s post-edit)', positiveIntArg('deadline'))
   .option('--install', 'write the SessionStart + PostToolUse hooks into Claude Code settings.json (user scope, or --project for repo scope)', false)
   .option('--project', 'with --install: target <repo>/.claude/settings.json instead of the user scope', false)
-  .action((event: string, opts: { json: boolean; repo?: string; budget: number; deadline?: number; install: boolean; project: boolean }) => {
+  .action((event: string, opts: { json: boolean; client: string; repo?: string; budget: number; deadline?: number; install: boolean; project: boolean }) => {
     run(async () => {
       guardHookStdout();
       const parsedEvent = parseHookEvent(event);
@@ -559,6 +561,7 @@ program
       const repo = opts.repo ?? repoFromStdinJson(raw);
       const outcome = runHook(parsedEvent, {
         json: opts.json,
+        client: parseHookClient(opts.client),
         repo,
         budget: opts.budget,
         deadlineMs: opts.deadline ?? (parsedEvent === 'post-edit' ? POST_EDIT_DEADLINE_MS : HOOK_INDEX_DEADLINE_MS),
