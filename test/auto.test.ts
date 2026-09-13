@@ -154,6 +154,29 @@ describe('hermes hooks installer', () => {
     const parsed = JSON.parse(out) as { context: string };
     expect(typeof parsed.context).toBe('string');
   });
+
+  it('injects on the first turn only — Hermes fires pre_llm_call every turn', () => {
+    // Each turn's user message is stamped with what was sent and replayed
+    // byte-stable afterwards, so an ungated hook re-sends the whole block on
+    // every turn of a long session. `extra.is_first_turn` is the gate; a
+    // payload without it must still inject (silence is the bug we fixed).
+    const [recall] = hermesHookScripts(`node ${JSON.stringify(path.resolve('dist/cli/index.js'))}`);
+    if (recall === undefined) throw new Error('expected the recall script');
+    const script = path.join(workspace, 'recall-firstturn.sh');
+    fs.writeFileSync(script, recall.body);
+    fs.chmodSync(script, 0o755);
+    const run = (payload: unknown): string =>
+      execFileSync('sh', [script], { input: JSON.stringify(payload), encoding: 'utf8', env: { ...process.env } });
+
+    const first = run({ hook_event_name: 'pre_llm_call', cwd: workspace, extra: { is_first_turn: true } });
+    expect(typeof (JSON.parse(first) as { context?: string }).context).toBe('string');
+
+    const later = run({ hook_event_name: 'pre_llm_call', cwd: workspace, extra: { is_first_turn: false } });
+    expect(later).toBe('');
+
+    const unknownShape = run({ hook_event_name: 'pre_llm_call', cwd: workspace });
+    expect(typeof (JSON.parse(unknownShape) as { context?: string }).context).toBe('string');
+  });
 });
 
 describe('auto lifecycle', () => {

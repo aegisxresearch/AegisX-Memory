@@ -6,8 +6,6 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { Engine, DEFAULT_TOKEN_BUDGET, describeSessionSave } from '../core/engine.js';
 import { aegisxHome, dbPath, normalizeRepoPath } from '../core/paths.js';
 import { AegisxError, type KnowledgeKind, type SessionHandoffInput, type SessionSaveSummary } from '../core/types.js';
@@ -32,6 +30,7 @@ import {
   runHook,
 } from './hooks.js';
 import { configPathFor, rulesPathFor } from './auto-setup.js';
+import { versionString } from './version.js';
 import os from 'node:os';
 
 const program = new Command();
@@ -42,31 +41,8 @@ function isHomeDir(dir: string): boolean {
 
 /* ------------------------------------------------------------------ version */
 
-/**
- * `--version` used to print the package.json string alone — `1.0.0` since the
- * first commit, through dozens of behavioral changes, which once made a user
- * (reasonably) ask why a fresh install still said 1.0.0. The commit and date
- * are the real build identity; the semver moves only at tagged releases.
- *
- * Computed at *command time*, best effort: a copy run outside a git checkout
- * (npm tarball, someone's `node dist/cli/index.js`) simply omits the suffix
- * instead of failing — the base version is always printed.
- */
-export function versionString(): string {
-  const base = '1.0.0';
-  try {
-    // This file lives at <root>/dist/cli/index.js (or src/cli via tsx); the
-    // checkout root is two levels up.
-    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-    const opts = { cwd: root, encoding: 'utf8' as const, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'] };
-    const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], opts).trim();
-    const date = execFileSync('git', ['log', '-1', '--format=%cs'], opts).trim();
-    return `${base} (${commit} · ${date})`;
-  } catch {
-    return base;
-  }
-}
-
+// Build identity lives in ./version.ts: doctor compares its own stamp against
+// the build a registered MCP entry points at, so both must read one source.
 program
   .name('aegisxmemory')
   .version(versionString())

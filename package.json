@@ -1,6 +1,6 @@
 {
   "name": "aegisx-memory",
-  "version": "1.0.0",
+  "version": "1.30.0",
   "description": "Persistent memory engine for AI coding agents — eliminates codebase re-reads via local SQLite memory, hash-invalidated code indexing, and budgeted recall. CLI + MCP.",
   "type": "module",
   "license": "MIT",

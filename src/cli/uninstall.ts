@@ -335,8 +335,9 @@ export function runUninstall(scope: UninstallScope): UninstallResult[] {
 }
 
 /** Remove the Hermes hook pair the installer wrote: entries out of config.yaml
- *  (backup kept), the hook scripts deleted, the agent-hooks dir left if the
- *  user added their own hooks alongside. Idempotent: no block → absent. */
+ *  (backup kept), the hook scripts deleted, and the agent-hooks dir removed
+ *  only when we were the ones who emptied it (a dir still holding the user's
+ *  own hooks stays). Idempotent: no block → absent. */
 export function uninstallHermesHooks(configFile: string): UninstallResult {
   const what = 'hermes-hooks';
   if (!fs.existsSync(configFile)) return { what, path: configFile, action: 'absent', backup: null, detail: 'config file does not exist' };
@@ -389,21 +390,39 @@ export function uninstallHermesHooks(configFile: string): UninstallResult {
   const remaining = doc.toJS() as unknown;
   const remainingKeys = remaining !== null && typeof remaining === 'object' && !Array.isArray(remaining) ? Object.keys(remaining as Record<string, unknown>) : [];
   const oursAlone = remainingKeys.every((key) => key === 'hooks_auto_accept');
+
+  // Scripts first, whichever way the config file ends up: the file-deleted
+  // path used to return before this loop, so a config we deleted outright left
+  // its `aegisx-recall.sh` / `aegisx-save-nudge.sh` orphaned in agent-hooks.
+  const removeScripts = (): void => {
+    for (const script of scriptFiles) {
+      try {
+        fs.rmSync(script, { force: true });
+      } catch {
+        // best effort — the config entry is gone either way
+      }
+    }
+    // Then the folder, if we emptied it: Hermes keeps user hooks in the same
+    // directory, so an occupied dir stays and a bare empty one goes.
+    for (const dir of new Set(scriptFiles.map((script) => path.dirname(script)))) {
+      try {
+        if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      } catch {
+        // missing, occupied, or not removable — nothing to do
+      }
+    }
+  };
+
   if (oursAlone && remainingKeys.length <= 1) {
+    const kept = firstBackup(configFile);
     fs.rmSync(configFile, { force: true });
-    return { what, path: configFile, action: 'file-deleted', backup: firstBackup(configFile), detail: 'hook entries removed — config held nothing else, deleted' };
+    removeScripts();
+    return { what, path: configFile, action: 'file-deleted', backup: kept, detail: 'hook entries removed — config held nothing else, deleted' };
   }
   doc.delete('hooks_auto_accept');
 
   fs.writeFileSync(configFile, String(doc));
-
-  for (const script of scriptFiles) {
-    try {
-      fs.rmSync(script, { force: true });
-    } catch {
-      // best effort — the config entry is gone either way
-    }
-  }
+  removeScripts();
   return { what, path: configFile, action: 'removed', backup, detail: 'hook entries removed from config.yaml, scripts deleted' };
 }
 

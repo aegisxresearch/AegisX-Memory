@@ -15,6 +15,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SERVER_INSTRUCTIONS } from './tools.js';
 import { Engine } from '../core/engine.js';
 import { dbPath } from '../core/paths.js';
+import { VERSION_BASE } from '../core/version.js';
 import { registerMemoryTools } from './tools.js';
 
 export interface ServeOptions {
@@ -233,7 +234,7 @@ function handleTransportError(res: http.ServerResponse, err: unknown): void {
  * (which owns the SQLite connection) stays shared and cheap.
  */
 export function buildMcpServer(engine: Engine): McpServer {
-  const server = new McpServer({ name: 'aegisx-memory', version: '1.0.0' }, { instructions: SERVER_INSTRUCTIONS });
+  const server = new McpServer({ name: 'aegisx-memory', version: VERSION_BASE }, { instructions: SERVER_INSTRUCTIONS });
 
   // One shared registration, so the HTTP transport exposes exactly the same
   // tools as stdio — including `aegisxmemory_graph`, which this server used to

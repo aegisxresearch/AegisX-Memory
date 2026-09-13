@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { VERSION_BASE } from '../src/core/version.js';
 
 const DIST_ENTRY = path.resolve('dist/cli/index.js');
 const built = fs.existsSync(DIST_ENTRY);
@@ -33,9 +34,18 @@ function runVersion(cwd: string): string {
 }
 
 suite('cli --version', () => {
+  it('the released version is declared once and agrees with package.json', () => {
+    // A release bump that lands in one file only is how `1.0.0` survived dozens
+    // of behavioral changes: the MCP handshake, `--version` and package.json all
+    // quote the same number, so drift has to fail here rather than ship.
+    const pkg = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8')) as { version: string };
+    expect(pkg.version).toBe(VERSION_BASE);
+  });
+
   it('happy: prints semver + short commit + commit date', () => {
     const out = runVersion(process.cwd());
-    expect(out).toMatch(/^1\.0\.0 \([0-9a-f]{7,40} · \d{4}-\d{2}-\d{2}\)$/);
+    const escaped = VERSION_BASE.replace(/\./g, '\\.');
+    expect(out).toMatch(new RegExp(`^${escaped} \\([0-9a-f]{7,40} · \\d{4}-\\d{2}-\\d{2}\\)$`));
     // The commit must be *this checkout's* HEAD, not a stale constant.
     const head = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
     expect(out).toContain(`(${head} ·`);
@@ -56,6 +66,6 @@ suite('cli --version', () => {
       cwd: copy,
       encoding: 'utf8',
     }).trim();
-    expect(out).toBe('1.0.0');
+    expect(out).toBe(VERSION_BASE);
   });
 });

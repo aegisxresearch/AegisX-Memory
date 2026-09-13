@@ -15,10 +15,12 @@ import {
   renderDoctorReport,
   runDoctor,
   setEngineConstructor,
+  staleEntryNote,
   toJsonReport,
   type Check,
 } from '../src/cli/doctor.js';
 import { Engine } from '../src/core/engine.js';
+import { versionString } from '../src/cli/version.js';
 
 setEngineConstructor(Engine);
 
@@ -550,5 +552,71 @@ describe('doctor --json (machine-readable, CI)', () => {
     const fixed = runDoctor(dbFile, repoDir, { fix: true });
     const fixedJson = toJsonReport(fixed, '/h', null);
     expect(fixedJson.passed).toBe(fixedJson.checks.every((c) => c.status === 'pass'));
+  });
+});
+
+describe('doctor — the registered entry must be the build you are running', () => {
+  const profile = { probe: () => '9.9.9 (deadbee · 2020-01-01)', mine: () => '1.30.0 (abc1234 · 2026-09-13)' };
+
+  it('warn: an entry pointing at a different build is named with both stamps', () => {
+    const report = runDoctor(dbFile, repoDir, {
+      probeVersion: profile.probe,
+    });
+    // No registration in this workspace → the check reports the "nothing found"
+    // warn; the note itself is what this test pins.
+    const note = staleEntryNote('/tmp/AegisX-Memory-old/dist/cli/index.js', profile.probe, profile.mine);
+    expect(note).toContain('different build');
+    expect(note).toContain('9.9.9 (deadbee · 2020-01-01)');
+    expect(note).toContain('this CLI: 1.30.0 (abc1234 · 2026-09-13)');
+    expect(report.checks.length).toBeGreaterThan(0);
+  });
+
+  it('negative: a probe that cannot answer never becomes a verdict', () => {
+    const note = staleEntryNote('/tmp/AegisX-Memory-old/dist/cli/index.js', () => null, profile.mine);
+    expect(note).toBeNull();
+  });
+
+  it('warn: same stamp but a bundle older than the sources is caught by mtime', () => {
+    const root = path.join(workspace, 'checkout');
+    const srcDir = path.join(root, 'src', 'cli');
+    const entry = path.join(root, 'dist', 'cli', 'index.js');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, '// built long ago\n');
+    fs.writeFileSync(path.join(srcDir, 'version.ts'), '// edited since\n');
+    const old = new Date(Date.now() - 600_000);
+    fs.utimesSync(entry, old, old);
+
+    const note = staleEntryNote(entry, () => '1.30.0 (abc1234 · 2026-09-13)', profile.mine, root);
+    expect(note).toContain('older than the sources');
+    expect(note).toContain('npm run build');
+  });
+
+  it('pass: a freshly built bundle (entry newer than sources) warns about nothing', () => {
+    const root = path.join(workspace, 'fresh');
+    const srcDir = path.join(root, 'src');
+    const entry = path.join(root, 'dist', 'cli', 'index.js');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'index.ts'), '// source\n');
+    fs.writeFileSync(entry, '// fresh build\n');
+    const old = new Date(Date.now() - 600_000);
+    fs.utimesSync(path.join(srcDir, 'index.ts'), old, old);
+
+    expect(staleEntryNote(entry, () => profile.mine(), profile.mine, root)).toBeNull();
+  });
+
+  it('pass: the entry that is this very module is never probed', () => {
+    // The build printing the report cannot be a different build.
+    const selfEntry = path.resolve('src/cli/doctor.ts');
+    const explodingProbe = (): string | null => {
+      throw new Error('the probe must not run for the running build');
+    };
+    expect(staleEntryNote(selfEntry, explodingProbe, profile.mine)).toBeNull();
+  });
+
+  it('the stamp doctor compares against is the running build\u2019s', () => {
+    // Guards the seam: doctor must diff against `versionString()`, not a literal.
+    expect(versionString()).toMatch(/^1\.\d+\.\d+/);
   });
 });

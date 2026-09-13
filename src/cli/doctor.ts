@@ -4,13 +4,16 @@
  *  2. Schema state (fresh file vs migrated tables)
  *  3. Index freshness (read-only drift between ledger and disk)
  *  4. MCP registration detection (Hermes / Claude / Cursor config files)
+ *  5. The registered entry is the build you are running (not a stale copy)
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { normalizeRepoPath } from '../core/paths.js';
 import { AegisxError } from '../core/types.js';
 import { SETUP_AGENTS, detectAgentPresence } from './auto-setup.js';
+import { checkoutRoot, newestMtimeMs, probeEntryVersion, versionString } from './version.js';
 
 export type CheckStatus = 'pass' | 'warn' | 'fail';
 
@@ -436,7 +439,46 @@ export function codexEntryIn(content: string | null): { command: string; args: s
   return { command, args };
 }
 
-function checkMcpRegistrations(repoAbsPath: string | null): Check[] {
+/**
+ * A registered entry can point at a build that is not the one running this
+ * check — another checkout, or this checkout's `dist` from before the last
+ * source edit. Both fail silently: the agent keeps calling stale code while the
+ * registration itself looks perfect. Returns a human note, or null when the
+ * entry *is* the running build or the question cannot be answered (a probe
+ * failure is never a verdict about someone's install).
+ */
+export function staleEntryNote(
+  entry: string,
+  probe: (file: string) => string | null,
+  selfStamp: () => string,
+  root: string = checkoutRoot(),
+): string | null {
+  const entryAbs = path.resolve(entry);
+  if (entryAbs === path.resolve(fileURLToPath(import.meta.url))) return null; // the build printing this report
+  const stamp = probe(entryAbs);
+  if (stamp === null) return null;
+  const mine = selfStamp();
+  if (stamp !== mine) return `registered entry is a different build: ${stamp} (this CLI: ${mine})`;
+  // Same stamp, older file: the sources moved on after this bundle was built,
+  // and the semver/commit pair cannot see that — only the mtimes can.
+  if (!entryAbs.startsWith(root + path.sep)) return null;
+  const sources = newestMtimeMs(path.join(root, 'src'));
+  let entryMtime: number | null = null;
+  try {
+    entryMtime = fs.statSync(entryAbs).mtimeMs;
+  } catch {
+    entryMtime = null;
+  }
+  if (sources !== null && entryMtime !== null && sources > entryMtime + 1000) {
+    return 'registered entry is older than the sources — rebuild with `npm run build`';
+  }
+  return null;
+}
+
+function checkMcpRegistrations(
+  repoAbsPath: string | null,
+  probe: (entry: string) => string | null = probeEntryVersion,
+): Check[] {
   // Project-level registrations (.mcp.json, .vscode/mcp.json) belong to the
   // repo being doctored, not to wherever the CLI happens to run.
   const regs = detectMcpRegistrations(os.homedir(), repoAbsPath ?? process.cwd());
@@ -450,23 +492,38 @@ function checkMcpRegistrations(repoAbsPath: string | null): Check[] {
       },
     ];
   }
-  const checks: Check[] = regs.map((reg): Check =>
-    reg.entryExists && reg.matchesAegisx
-      ? { name: `mcp: ${reg.agent}`, status: 'pass', detail: `${reg.command} ${reg.args.join(' ')} (${reg.configPath})` }
-      : reg.entryExists
-        ? {
-            name: `mcp: ${reg.agent}`,
-            status: 'warn',
-            detail: `registered but entry does not look like AegisX: ${reg.command} ${reg.args.join(' ')}`,
-            fix: 're-print with `aegisxmemory mcp-config --agent ' + reg.agent + '`',
-          }
-        : {
-            name: `mcp: ${reg.agent}`,
-            status: 'fail',
-            detail: `registered but entry file missing: ${reg.command} ${reg.args.join(' ')}`,
-            fix: 'rebuild with `npm run build` or fix the path via `aegisxmemory mcp-config`',
-          },
-  );
+  let mine: string | undefined;
+  const selfStamp = (): string => (mine ??= versionString());
+  const checks: Check[] = regs.map((reg): Check => {
+    if (!reg.entryExists) {
+      return {
+        name: `mcp: ${reg.agent}`,
+        status: 'fail',
+        detail: `registered but entry file missing: ${reg.command} ${reg.args.join(' ')}`,
+        fix: 'rebuild with `npm run build` or fix the path via `aegisxmemory mcp-config`',
+      };
+    }
+    if (!reg.matchesAegisx) {
+      return {
+        name: `mcp: ${reg.agent}`,
+        status: 'warn',
+        detail: `registered but entry does not look like AegisX: ${reg.command} ${reg.args.join(' ')}`,
+        fix: 're-print with `aegisxmemory mcp-config --agent ' + reg.agent + '`',
+      };
+    }
+    const entry = reg.command === 'node' && reg.args.length > 0 ? expandHome(reg.args[0] ?? '') : null;
+    const isSelf = entry !== null && path.resolve(entry) === path.resolve(fileURLToPath(import.meta.url));
+    const stale = entry === null || isSelf ? null : staleEntryNote(entry, probe, selfStamp);
+    if (stale !== null) {
+      return {
+        name: `mcp: ${reg.agent}`,
+        status: 'warn',
+        detail: `${reg.command} ${reg.args.join(' ')} (${reg.configPath}) — ${stale}`,
+        fix: 'refresh the entry with `aegisxmemory mcp-config --install --agent ' + reg.agent + '` (or `aegisxmemory auto`)',
+      };
+    }
+    return { name: `mcp: ${reg.agent}`, status: 'pass', detail: `${reg.command} ${reg.args.join(' ')} (${reg.configPath})` };
+  });
   // Present but never wired: the CLI works, the agent cannot call it. Only the
   // agent's *config file* is proof of registration — the binary existing proves
   // nothing about the client, and users report "it does not respond" for
@@ -620,6 +677,9 @@ export function applyFixes(
 export interface DoctorOptions {
   fix?: boolean;
   onWarn?: (msg: string) => void;
+  /** Seam for tests: asked what version another build reports, or null when it
+   *  cannot say. Defaults to really running `<entry> --version`. */
+  probeVersion?: (entry: string) => string | null;
 }
 
 export function runDoctor(dbFile: string, repoAbsPath: string | null, options: DoctorOptions = {}): DoctorReport {
@@ -633,7 +693,7 @@ export function runDoctor(dbFile: string, repoAbsPath: string | null, options: D
     checks.push(checkIndexFreshness(dbFile, repoAbsPath));
   }
 
-  checks.push(...checkMcpRegistrations(repoAbsPath));
+  checks.push(...checkMcpRegistrations(repoAbsPath, options.probeVersion));
   checks.push(checkHomePermissions(path.dirname(dbFile)));
 
   return {

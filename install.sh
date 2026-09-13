@@ -49,7 +49,7 @@ usage() {
 AegisX-Memory installer — safe to re-run; re-running is how you upgrade.
 
   curl -fsSL https://raw.githubusercontent.com/aegisxresearch/AegisX-Memory/main/install.sh | sh
-  curl -fsSL .../install.sh | sh -s -- --ref v1.0.0 --no-init
+  curl -fsSL .../install.sh | sh -s -- --ref v1.30.0 --no-init
 
 Options:
   -h, --help         this screen
@@ -231,6 +231,15 @@ printf '     (wires every agent it detects + starts the MCP server and dashboard
 printf '\n'
 printf '  Agent choice & auto-memory rules:  aegisxmemory setup\n'
 printf '  Prefer manual? aegisxmemory mcp-config --install --agent hermes --rules\n'
-printf '  Update later:  curl -fsSL %s/raw/%s/install.sh | sh\n' \
-  "${REPO_URL%.git}" "$REF"
+# Only GitHub serves install.sh at /raw/<ref>/. Printing that shape for a
+# mirror, a --dir checkout or a file:// URL hands the user a link that cannot
+# work; those installs re-run this same script instead.
+case "$REPO_URL" in
+  https://github.com/*|http://github.com/*)
+    printf '  Update later:  curl -fsSL %s/raw/%s/install.sh | sh\n' \
+      "${REPO_URL%.git}" "$REF" ;;
+  *)
+    printf '  Update later:  re-run this installer, same source and ref\n'
+    printf '                 (AEGISX_REPO_URL=%s AEGISX_REF=%s)\n' "$REPO_URL" "$REF" ;;
+esac
 printf '  Docs: README.md (English) · README.id.md (Bahasa Indonesia)\n'

@@ -73,20 +73,39 @@ export function hermesHookScripts(bin?: string): HookScriptSpec[] {
       json: true,
       body: `#!/usr/bin/env sh
 # aegisx-memory:pre-llm-call — inject the project memory block into the first
-# turn of every Hermes session. Reads the event JSON on stdin only to take its
-# cwd; a missing or malformed body resolves the repo from process cwd instead.
-# Contract (plugins_dispatch): stdout must be exactly one JSON object:
-# {"context": "..."} — never logs, never a partial line.
+# turn of a Hermes session. Reads the event JSON on stdin for its cwd and for
+# 'extra.is_first_turn'; a missing body resolves the repo from process cwd.
+#
+# Hermes fires pre_llm_call on EVERY turn, and each turn's user message is
+# stamped with what was sent (replayed byte-stable afterwards), so injecting
+# unconditionally re-sends the whole block on every turn of a long session.
+# The block belongs to the first turn; later turns can ask for a focused
+# recall through the MCP tool, which is cheap and on demand.
+#
+# Contract (plugins_dispatch): stdout is either exactly one JSON object
+# {"context": "..."} or empty — never logs, never a partial line.
 exec 2>/dev/null
 RAW=$(cat 2>/dev/null || true)
-CWD=$(printf '%s' "$RAW" | /usr/bin/env node -e '
+DECISION=$(printf '%s' "$RAW" | /usr/bin/env node -e '
   let raw = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (c) => { raw += c; });
   process.stdin.on("end", () => {
-    try { const j = JSON.parse(raw); if (typeof j.cwd === "string" && j.cwd !== "") { process.stdout.write(j.cwd); } } catch { /* malformed body: use process cwd */ }
+    try {
+      const j = JSON.parse(raw);
+      const extra = j && typeof j.extra === "object" && j.extra !== null ? j.extra : {};
+      if (extra.is_first_turn === false) { process.stdout.write("0"); return; }
+      process.stdout.write("1\\n" + (typeof j.cwd === "string" ? j.cwd : ""));
+    } catch {
+      process.stdout.write("1"); /* malformed body: inject from process cwd */
+    }
   });
 ' 2>/dev/null)
+# Absent 'is_first_turn' (older Hermes, a hand-run, another client) injects: a
+# payload-shape change must degrade to a slightly costly block, never to the
+# silent no-injection this dialect work exists to eliminate.
+if [ "$DECISION" = "0" ]; then exit 0; fi
+CWD=$(printf '%s' "$DECISION" | sed -n '2p')
 cd "\${CWD:-\$PWD}" 2>/dev/null || true
 exec ${cmd} hook session-start --json --client hermes
 `,

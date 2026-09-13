@@ -5,8 +5,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { installClaudeHooks } from '../src/cli/hooks.js';
+import { installHermesHooks } from '../src/cli/hermes-hooks.js';
 import { installForAgent, installProjectRules, installRulesForAgent } from '../src/cli/auto-setup.js';
-import { runUninstall, uninstallClaudeHooks, uninstallMcpForAgent, uninstallProjectRules, uninstallRulesForAgent } from '../src/cli/uninstall.js';
+import {
+  runUninstall,
+  uninstallClaudeHooks,
+  uninstallHermesHooks,
+  uninstallMcpForAgent,
+  uninstallProjectRules,
+  uninstallRulesForAgent,
+} from '../src/cli/uninstall.js';
 
 let workspace: string;
 let repoDir: string;
@@ -254,5 +262,48 @@ describe('uninstall — runUninstall facade + CLI', () => {
     const results = runUninstall({ agents: ['hermes'], hooks: false, project: false, projectDir: repoDir });
     expect(results.some((r) => r.what === 'project')).toBe(false);
     expect(fs.existsSync(path.join(repoDir, 'AGENTS.md'))).toBe(true);
+  });
+});
+
+describe('uninstall — Hermes hooks leave no husk', () => {
+  function installPair(name: string): { configFile: string; hooksDir: string } {
+    const configFile = path.join(workspace, name, 'config.yaml');
+    const hooksDir = path.join(workspace, name, 'agent-hooks');
+    const result = installHermesHooks(configFile, { hooksDir, bin: 'aegisxmemory-fake' });
+    expect(result.action).not.toBe('error');
+    expect(fs.existsSync(path.join(hooksDir, 'aegisx-recall.sh'))).toBe(true);
+    return { configFile, hooksDir };
+  }
+
+  it('happy: the scripts and the folder we emptied are both gone', () => {
+    const { configFile, hooksDir } = installPair('plain');
+    fs.writeFileSync(configFile, 'model:\n  provider: tokenrouter\n' + fs.readFileSync(configFile, 'utf8'));
+    const result = uninstallHermesHooks(configFile);
+    expect(result.action).toBe('removed');
+    expect(fs.existsSync(path.join(hooksDir, 'aegisx-recall.sh'))).toBe(false);
+    expect(fs.existsSync(path.join(hooksDir, 'aegisx-save-nudge.sh'))).toBe(false);
+    expect(fs.existsSync(hooksDir)).toBe(false);
+    expect(fs.readFileSync(configFile, 'utf8')).toContain('tokenrouter'); // user config intact
+  });
+
+  it('regression: a config we delete outright still takes its scripts with it', () => {
+    // The file-deleted branch used to return before the script loop, so an
+    // installer-created config vanished while its hook scripts stayed behind.
+    const { configFile, hooksDir } = installPair('ours-alone');
+    const result = uninstallHermesHooks(configFile);
+    expect(result.action).toBe('file-deleted');
+    expect(fs.existsSync(configFile)).toBe(false);
+    expect(fs.existsSync(hooksDir)).toBe(false);
+  });
+
+  it('negative: a folder holding the user\u2019s own hooks is left alone', () => {
+    const { configFile, hooksDir } = installPair('shared');
+    const mine = path.join(hooksDir, 'my-own-hook.sh');
+    fs.writeFileSync(mine, '#!/bin/sh\n');
+    const result = uninstallHermesHooks(configFile);
+    expect(result.action).toBe('file-deleted');
+    expect(fs.existsSync(path.join(hooksDir, 'aegisx-recall.sh'))).toBe(false);
+    expect(fs.existsSync(mine)).toBe(true);
+    expect(fs.existsSync(hooksDir)).toBe(true);
   });
 });

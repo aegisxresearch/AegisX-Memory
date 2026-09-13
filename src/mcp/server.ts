@@ -10,6 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Engine } from '../core/engine.js';
 import { dbPath } from '../core/paths.js';
+import { VERSION_BASE } from '../core/version.js';
 import { SERVER_INSTRUCTIONS, registerMemoryTools } from './tools.js';
 
 export async function startMcpServer(): Promise<void> {
@@ -17,7 +18,7 @@ export async function startMcpServer(): Promise<void> {
   // `instructions` rides the initialize response: conforming clients put it in
   // the model's context — the one channel that works even when the agent never
   // reads a rules file.
-  const server = new McpServer({ name: 'aegisx-memory', version: '1.0.0' }, { instructions: SERVER_INSTRUCTIONS });
+  const server = new McpServer({ name: 'aegisx-memory', version: VERSION_BASE }, { instructions: SERVER_INSTRUCTIONS });
   registerMemoryTools(server, engine);
 
   const transport = new StdioServerTransport();
